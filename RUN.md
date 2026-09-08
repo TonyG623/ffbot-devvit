@@ -13,21 +13,27 @@ npm test          # types + 17 unit tests + bundle
 
 Node 24.18.0+ required (`.nvmrc` pins it).
 
-## 2. Wiki on r/ffbottest — ALREADY DONE
+## 2. Seed the wiki on r/ffbottest
 
-Checked 2026-09-08. Nothing to paste:
+Two pages, content pre-generated in `wiki-seed/`:
 
-- `r/ffbottest/wiki/ffbot` — the config page already exists (revision by FFBot,
-  ~3 months ago, so `seed_wiki.py` was run against this sub at some point).
-  Verified it parses: 21 threads, exactly 1 enabled.
-- `r/ffbottest/wiki/ffbot/commish` — created 2026-09-08, the body page for the
-  one enabled thread.
+| Paste this file | Into this wiki page |
+| --- | --- |
+| `wiki-seed/ffbot.md` | `https://www.reddit.com/r/ffbottest/wiki/ffbot` |
+| `wiki-seed/ffbot-threads.md` | `https://www.reddit.com/r/ffbottest/wiki/ffbot/threads` |
 
-`index: false` in the live config, so the Index thread is off for the first run.
-Turn it on later and create `ffbot/index` before you do.
+Then create ONE thread-body page, since only one thread is enabled in the
+seeded config:
 
-The pre-generated copies in `wiki-seed/` are kept for reference and for seeding
-a different subreddit.
+- `https://www.reddit.com/r/ffbottest/wiki/ffbot/commish` — any text; it becomes
+  the post body.
+
+`index: false` in the seeded config, so the Index thread is off for the first
+run. Turn it on once the basics work, and add `ffbot/index` before you do.
+
+These pages are the same ones `seed_wiki.py` would have written. The content was
+generated from that script's own builders, so it matches — but it was NOT
+uploaded by the script, and the script's hardcoded credentials were not used.
 
 ## 3. Check the flair CSS class exists
 
