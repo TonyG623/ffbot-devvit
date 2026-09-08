@@ -1,0 +1,62 @@
+{
+  "$schema": "https://developers.reddit.com/schema/config-file.v1.json",
+  "name": "ffbot",
+  "server": {},
+  "permissions": {
+    "reddit": {
+      "enable": true,
+      "scope": "moderator"
+    },
+    "redis": true
+  },
+  "scheduler": {
+    "tasks": {
+      "ffbot-cycle": {
+        "endpoint": "/internal/scheduler/cycle",
+        "cron": "*/15 * * * *"
+      },
+      "ffbot-process-thread": {
+        "endpoint": "/internal/scheduler/process-thread"
+      },
+      "ffbot-build-index": {
+        "endpoint": "/internal/scheduler/build-index"
+      }
+    }
+  },
+  "triggers": {
+    "onCommentCreate": "/internal/triggers/comment-create"
+  },
+  "menu": {
+    "items": [
+      {
+        "label": "[FFBot] Run cycle now",
+        "description": "Force an immediate FFBot posting/refresh cycle.",
+        "forUserType": "moderator",
+        "location": "subreddit",
+        "endpoint": "/internal/menu/run-now"
+      }
+    ]
+  },
+  "settings": {
+    "subreddit": {
+      "postsPerDay": {
+        "type": "number",
+        "label": "Posts per day (1, 2 or 3) - controls the Morning/Afternoon/Evening thread zone",
+        "defaultValue": 1
+      },
+      "timezone": {
+        "type": "string",
+        "label": "IANA timezone used for thread dates (e.g. America/Chicago)",
+        "defaultValue": "America/Chicago"
+      },
+      "rolloverHour": {
+        "type": "number",
+        "label": "Hour (0-23) before which the previous day's date is still used",
+        "defaultValue": 6
+      }
+    }
+  },
+  "scripts": {
+    "dev": "npm run watch"
+  }
+}
