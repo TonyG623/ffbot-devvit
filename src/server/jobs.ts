@@ -142,8 +142,17 @@ export async function runCycle(): Promise<void> {
     }
 
     console.log(`SUBMITTING THREAD ${title}`)
-    const post = await reddit.submitPost({subredditName: sub, title, text: body})
+    // Flair is set AT SUBMIT, not after. Subreddits can require post flair
+    // (r/ffbottest does), in which case a bare submit is rejected outright and
+    // the Python's submit-then-flair ordering never gets a chance to run.
+    const post = await reddit.submitPost({
+      subredditName: sub,
+      title,
+      text: body,
+      flairText: cfg.flair_text,
+    })
     await post.setSuggestedCommentSort('NEW')
+    // Re-apply to attach the stylesheet class, which submitPost cannot set.
     await reddit.setPostFlair({
       subredditName: sub,
       postId: post.id,
@@ -336,7 +345,12 @@ export async function buildIndex(): Promise<void> {
   }
 
   console.log(`SUBMITTING THREAD ${title}`)
-  const post = await reddit.submitPost({subredditName: sub, title, text: body})
+  const post = await reddit.submitPost({
+    subredditName: sub,
+    title,
+    text: body,
+    flairText: 'Index',
+  })
   await reddit.setPostFlair({
     subredditName: sub,
     postId: post.id,
@@ -379,7 +393,12 @@ export async function postNewsAndDiscussions(): Promise<string | undefined> {
   }
 
   console.log(`SUBMITTING: ${title}`)
-  const post = await reddit.submitPost({subredditName: sub, title, text: body})
+  const post = await reddit.submitPost({
+    subredditName: sub,
+    title,
+    text: body,
+    flairText: 'Daily Thread',
+  })
   await reddit.setPostFlair({
     subredditName: sub,
     postId: post.id,

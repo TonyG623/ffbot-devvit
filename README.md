@@ -5,18 +5,26 @@ for the App Migration Program.
 
 ## Status — read this first
 
-**This has never run against Reddit.** It was written from the source Python and
-the official Devvit 0.14.2 docs, and it has never been uploaded, installed, or
-playtested. Treat every behaviour below as a claim to be verified, not a fact.
+**The Devvit app has never run against Reddit.** It was written from the source
+Python and the official Devvit 0.14.2 docs, and has never been uploaded,
+installed, or playtested — that needs the `devvit` CLI, which requires network
+access to reddit.com that the authoring environment did not have.
+
+What HAS been checked against live Reddit: the wiki config parses, the generated
+titles match the production bot's exactly, and the counting rules were run over a
+real thread's comments. Those are real checks on real data — but every call that
+writes to Reddit through Devvit is still unproven.
 
 What *is* verified:
 
 | Check | Result |
 | --- | --- |
 | `tsc --build` against real `@devvit/web` types | passes |
-| 17 unit tests over the pure logic | pass |
+| 26 unit tests over the pure logic | pass |
 | `esbuild` bundle to CJS | succeeds |
-| Config parse of the real seeded wiki page | 21 threads, 1 enabled, globals correct |
+| Config parse of the real live wiki page on r/ffbottest | 21 threads, 1 enabled, globals correct |
+| Titles vs the LIVE Python bot's output, 2026-09-08 | all 14 reproduced exactly |
+| Counting rules vs a real r/fantasyfootball thread | 30 comments, both counters verified |
 
 See `RUN.md` for the playtest checklist and pre-generated wiki page content.
 
@@ -41,9 +49,8 @@ npx devvit playtest r/ffbottest
 every 15 minutes; use the moderator menu item **[FFBot] Run cycle now** to
 trigger a cycle immediately instead of waiting.
 
-Before the first run, create the config wiki page at `r/ffbottest/wiki/ffbot`
-holding the YAML from `fantasyfootball.yaml`, plus one `r/ffbottest/wiki/ffbot/<name>`
-page per `wiki:` key referenced by the threads, and `r/ffbottest/wiki/ffbot/index`.
+The r/ffbottest wiki is already set up — `ffbot` (the config) and
+`ffbot/commish` (the body for the one enabled thread) both exist. See `RUN.md`.
 
 ## The one design decision that matters
 
@@ -91,12 +98,20 @@ renders what Redis already knows. The trigger endpoint is declared and stubbed a
    easy to mistake for one: length-filtered replies (`len(body) > 20`) drive the
    "# Helped in thread" column, and unfiltered replies drive the leaderboards
    and "# Helped in all threads". Collapsing them would change published
-   numbers, so `comments.ts` tracks both.
+   numbers, so `comments.ts` tracks both. This is not theoretical — on the real
+   thread captured in `fixtures/`, `headfullofmangos` scores 12 substantive vs
+   13 total because one reply was 19 characters. See `counting.test.ts`.
 
-4. **Timezone, posts-per-day and rollover hour are subreddit settings**, not
+4. **Flair is set at submit time**, via `submitPost({flairText})`, not only
+   afterwards with `setPostFlair`. Subreddits can require post flair — r/ffbottest
+   does — and a bare submit is rejected outright there, so the Python's
+   submit-then-flair ordering would never post at all. `setPostFlair` still runs
+   afterwards to attach the stylesheet CSS class, which `submitPost` can't set.
+
+5. **Timezone, posts-per-day and rollover hour are subreddit settings**, not
    `pytz.timezone('US/Central')` hardcoded in the module body.
 
-5. **State moved** from `/opt/ffbot/state/*.json` to Redis. The wiki-config
+6. **State moved** from `/opt/ffbot/state/*.json` to Redis. The wiki-config
    fallback and the "config broken / config restored" modmail alerts behave the
    same, including only alerting once per state change.
 
@@ -109,10 +124,11 @@ renders what Redis already knows. The trigger endpoint is declared and stubbed a
 - The Python's `replace_more(limit=None)` has no direct equivalent. Devvit's
   `Listing` paginates on its own; whether it reaches every comment on a large
   thread is unverified.
-- Flair is set via `reddit.setPostFlair` with the config's `css_class`. The
-  `fantasyfootball.yaml` has `flair_css: "Daily Thread"` on the Playoff Fantasy
+- The live wiki config has `flair_css: "Daily Thread"` on the Playoff Fantasy
   entry where every other entry uses `daily` — looks like a typo in the original,
-  carried over as-is.
+  carried over as-is. That thread is disabled, so it has not bitten yet.
+- r/ffbottest now has `Daily Thread`/`daily` and `Index`/`index` link flair
+  templates, created 2026-09-08 to match the config.
 - No retry/backoff around Reddit calls. The Python had none either, but a
   droplet retried on the next cron tick; here a thrown job just fails.
 
@@ -131,7 +147,10 @@ src/server/
   config.ts           wiki config load, cache fallback, modmail alerts
   state.ts            Redis accessors
   yaml-extract.ts     port of _extract_yaml (pure)
-  ffbot.test.ts       unit tests for the pure logic
+  ffbot.test.ts       unit tests for dates, tables, YAML extraction
+  titles.test.ts      port titles vs the live Python bot's real output
+  counting.test.ts    counting rules vs a real r/fantasyfootball thread
+  fixtures/           captured real thread data backing counting.test.ts
 ```
 
 The pure modules (`tables`, `dates`, `yaml-extract`) hold the logic that was

@@ -35,8 +35,83 @@ export type WalkResult = {
   partial: boolean
 }
 
+/**
+ * A top-level comment reduced to just what the counting rules look at.
+ * Decoupled from Devvit's Comment class so the rules can be tested against
+ * captured real-world data.
+ */
+export type RawComment = {
+  authorName: string
+  removed: boolean
+  createdAtMs: number
+  permalink: string
+  replies: {authorName: string; body: string}[]
+}
+
+export type Accumulation = {
+  substantive: Record<string, number>
+  allReplies: Record<string, number>
+  unanswered: UnansweredRow[]
+  topLevelSeen: number
+  /** Authors already listed as unanswered; the Python lists each author once. */
+  seenAuthors: Set<string>
+}
+
+export function emptyAccumulation(): Accumulation {
+  return {
+    substantive: {},
+    allReplies: {},
+    unanswered: [],
+    topLevelSeen: 0,
+    seenAuthors: new Set(),
+  }
+}
+
 function bump(counts: Record<string, number>, author: string): void {
   counts[author] = (counts[author] ?? 0) + 1
+}
+
+/**
+ * Apply the counting rules for ONE top-level comment. Pure apart from mutating
+ * `acc`. This is the heart of the port — see the fidelity note above for why
+ * two separate counters are maintained.
+ */
+export function accumulateComment(acc: Accumulation, c: RawComment): void {
+  acc.topLevelSeen++
+
+  let substantiveReplies = 0
+  for (const reply of c.replies) {
+    if (!reply.authorName) continue
+    bump(acc.allReplies, reply.authorName)
+    if (reply.body.length > SUBSTANTIVE_REPLY_LENGTH) {
+      substantiveReplies++
+      bump(acc.substantive, reply.authorName)
+    }
+  }
+
+  if (
+    substantiveReplies <= UNANSWERED_MAX &&
+    !c.removed &&
+    c.authorName &&
+    !acc.seenAuthors.has(c.authorName)
+  ) {
+    acc.seenAuthors.add(c.authorName)
+    acc.unanswered.push({
+      author: c.authorName,
+      // Filled in by the caller once both counters are complete.
+      helpedHere: 0,
+      helpedAll: 0,
+      createdSort: -Math.trunc(c.createdAtMs / 1000),
+      permalink: c.permalink,
+    })
+  }
+}
+
+/** Convenience wrapper over accumulateComment for a whole list. */
+export function accumulate(comments: RawComment[]): Accumulation {
+  const acc = emptyAccumulation()
+  for (const c of comments) accumulateComment(acc, c)
+  return acc
 }
 
 /**
@@ -53,16 +128,10 @@ export async function walkThread(
   deadline: number,
   skip = 0,
 ): Promise<WalkResult> {
-  const result: WalkResult = {
-    substantive: {},
-    allReplies: {},
-    unanswered: [],
-    topLevelSeen: 0,
-    partial: false,
-  }
+  const acc = emptyAccumulation()
+  let partial = false
 
   const post = await reddit.getPostById(postId as `t3_${string}`)
-  const seenAuthors = new Set<string>()
   let index = 0
 
   for await (const comment of post.comments) {
@@ -70,13 +139,10 @@ export async function walkThread(
     if (index <= skip) continue
 
     if (Date.now() > deadline) {
-      result.partial = true
+      partial = true
       break
     }
 
-    result.topLevelSeen++
-
-    let substantiveReplies = 0
     let replies: {authorName: string; body: string}[] = []
     try {
       const list = await comment.replies.all()
@@ -85,35 +151,22 @@ export async function walkThread(
       console.warn(`WARN: could not read replies for ${comment.id}: ${String(err)}`)
     }
 
-    for (const reply of replies) {
-      if (!reply.authorName) continue
-      bump(result.allReplies, reply.authorName)
-      if (reply.body.length > SUBSTANTIVE_REPLY_LENGTH) {
-        substantiveReplies++
-        bump(result.substantive, reply.authorName)
-      }
-    }
-
-    const author = comment.authorName
-    if (
-      substantiveReplies <= UNANSWERED_MAX &&
-      !comment.removed &&
-      author &&
-      !seenAuthors.has(author)
-    ) {
-      seenAuthors.add(author)
-      result.unanswered.push({
-        author,
-        // Filled in by the caller once both counters are complete.
-        helpedHere: 0,
-        helpedAll: 0,
-        createdSort: -Math.trunc(comment.createdAt.getTime() / 1000),
-        permalink: comment.permalink,
-      })
-    }
+    accumulateComment(acc, {
+      authorName: comment.authorName,
+      removed: comment.removed,
+      createdAtMs: comment.createdAt.getTime(),
+      permalink: comment.permalink,
+      replies,
+    })
   }
 
-  return result
+  return {
+    substantive: acc.substantive,
+    allReplies: acc.allReplies,
+    unanswered: acc.unanswered,
+    topLevelSeen: acc.topLevelSeen,
+    partial,
+  }
 }
 
 /** Merge counts from `src` into `dst` in place. */
