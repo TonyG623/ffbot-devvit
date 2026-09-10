@@ -72,6 +72,7 @@ const keySubReplies = (postId: string): string =>
   `ffbot:cc:${postId}:subreplies`
 const keyRemoved = (postId: string): string => `ffbot:cc:${postId}:removed`
 const keySeeded = (postId: string): string => `ffbot:cc:${postId}:seeded`
+const keyPending = (postId: string): string => `ffbot:cc:${postId}:pending`
 const keyHelp = (postId: string): string => `ffbot:cc:${postId}:help`
 const keyAll = (postId: string): string => `ffbot:cc:${postId}:all`
 
@@ -126,10 +127,11 @@ export type IncomingComment = {
 export async function recordComment(
   db: RedisLike,
   c: IncomingComment,
-): Promise<'top-level' | 'direct-reply' | 'deeper-reply' | 'duplicate'> {
-  if (!(await claim(db, c.postId, c.commentId))) return 'duplicate'
-
+): Promise<
+  'top-level' | 'direct-reply' | 'orphan-reply' | 'deeper-reply' | 'duplicate'
+> {
   if (isTopLevelParent(c.parentId)) {
+    if (!(await claim(db, c.postId, c.commentId))) return 'duplicate'
     const facts: TopLevelFacts = {
       a: c.author,
       t: Math.trunc(c.createdAtMs / 1000),
@@ -140,29 +142,94 @@ export async function recordComment(
     })
     await db.expire(keyFacts(c.postId), TTL_SECONDS)
     if (c.removed) await markRemoved(db, c.postId, c.commentId)
+
+    // Any replies that arrived BEFORE this comment did can now be applied.
+    await drainPending(db, c.postId, c.commentId)
     return 'top-level'
   }
 
   // A reply. It only counts if its parent is a TOP-LEVEL comment of this post;
   // the Python counted direct replies only, never the whole subtree.
   const parentFacts = await db.hGet(keyFacts(c.postId), c.parentId)
-  if (!parentFacts) return 'deeper-reply'
+  if (!parentFacts) {
+    // The parent is unknown, which means one of two things and we cannot yet
+    // tell which: either this is a genuinely deeper reply (ignore it), or its
+    // parent's trigger has not arrived yet. TRIGGERS ARE NOT ORDERED — this
+    // was observed live, with a reply's event delivered before its parent's.
+    //
+    // So do NOT claim it. Claiming here would mark it counted while dropping
+    // it, and the reconciliation walk would then skip it as a duplicate
+    // forever, silently losing the reply. Stash it instead and apply it if the
+    // parent turns up. A truly deeper reply just expires with the TTL.
+    await db.hSet(keyPending(c.postId), {
+      [c.commentId]: JSON.stringify({
+        parent: c.parentId,
+        author: c.author,
+        substantive: isSubstantive(c.body),
+      }),
+    })
+    await db.expire(keyPending(c.postId), TTL_SECONDS)
+    return 'orphan-reply'
+  }
 
-  const substantive = isSubstantive(c.body)
+  if (!(await claim(db, c.postId, c.commentId))) return 'duplicate'
+  await applyReply(db, c.postId, c.parentId, c.author, isSubstantive(c.body))
+  return 'direct-reply'
+}
+
+/** Apply one direct reply's contribution to the three counters. */
+async function applyReply(
+  db: RedisLike,
+  postId: string,
+  parentId: string,
+  author: string,
+  substantive: boolean,
+): Promise<void> {
   if (substantive) {
     // Author-independent: a long reply answers the question whoever wrote it.
-    await db.hIncrBy(keySubReplies(c.postId), c.parentId, 1)
-    await db.expire(keySubReplies(c.postId), TTL_SECONDS)
+    await db.hIncrBy(keySubReplies(postId), parentId, 1)
+    await db.expire(keySubReplies(postId), TTL_SECONDS)
   }
-  if (isRealAuthor(c.author)) {
-    await db.hIncrBy(keyAll(c.postId), c.author, 1)
-    await db.expire(keyAll(c.postId), TTL_SECONDS)
+  if (isRealAuthor(author)) {
+    await db.hIncrBy(keyAll(postId), author, 1)
+    await db.expire(keyAll(postId), TTL_SECONDS)
     if (substantive) {
-      await db.hIncrBy(keyHelp(c.postId), c.author, 1)
-      await db.expire(keyHelp(c.postId), TTL_SECONDS)
+      await db.hIncrBy(keyHelp(postId), author, 1)
+      await db.expire(keyHelp(postId), TTL_SECONDS)
     }
   }
-  return 'direct-reply'
+}
+
+/**
+ * Apply replies that arrived before their parent did, now that it exists.
+ * Returns how many were rescued, which is worth logging: a non-zero count is
+ * direct evidence that trigger delivery is reordering.
+ */
+async function drainPending(
+  db: RedisLike,
+  postId: string,
+  parentId: string,
+): Promise<number> {
+  const pending = await db.hGetAll(keyPending(postId))
+  if (!pending) return 0
+
+  let rescued = 0
+  for (const [commentId, raw] of Object.entries(pending)) {
+    let entry: {parent: string; author: string; substantive: boolean}
+    try {
+      entry = JSON.parse(raw)
+    } catch {
+      await db.hDel(keyPending(postId), [commentId])
+      continue
+    }
+    if (entry.parent !== parentId) continue
+
+    await db.hDel(keyPending(postId), [commentId])
+    if (!(await claim(db, postId, commentId))) continue
+    await applyReply(db, postId, parentId, entry.author, entry.substantive)
+    rescued++
+  }
+  return rescued
 }
 
 /**
@@ -296,6 +363,7 @@ export async function clearThreadState(
     db.del(keySubReplies(postId)),
     db.del(keyRemoved(postId)),
     db.del(keySeeded(postId)),
+    db.del(keyPending(postId)),
     db.del(keyHelp(postId)),
     db.del(keyAll(postId)),
   ])

@@ -408,6 +408,7 @@ async function reconcileOne(
     `RECONCILE ${thread.postId} read ${walked.comments.length} comments: ` +
       `${tally['top-level'] ?? 0} top-level, ${tally['direct-reply'] ?? 0} replies, ` +
       `${tally['deeper-reply'] ?? 0} deeper (ignored), ` +
+      `${tally['orphan-reply'] ?? 0} awaiting parent, ` +
       `${tally.duplicate ?? 0} already counted` +
       (walked.partial ? ', PARTIAL' : ''),
   )

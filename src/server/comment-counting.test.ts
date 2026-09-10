@@ -199,7 +199,11 @@ test('a reply to a reply is ignored, as the Python ignored it', async () => {
     }),
     'direct-reply',
   )
-  // Depth 2. The parent is not a top-level comment, so it must not count.
+  // Depth 2. Held as 'orphan-reply' rather than 'deeper-reply' because at this
+  // moment the two are indistinguishable: an unknown parent might be a deeper
+  // comment, or might be a parent whose trigger has not arrived yet. What
+  // matters is that it is NOT counted, and never will be, since no top-level
+  // comment with that id will ever turn up to drain it.
   assert.equal(
     await recordComment(db, {
       ...base,
@@ -208,7 +212,7 @@ test('a reply to a reply is ignored, as the Python ignored it', async () => {
       author: 'rando',
       body: 'a genuinely substantive follow up',
     }),
-    'deeper-reply',
+    'orphan-reply',
   )
 
   const state = await readThreadState(db, POST)
@@ -310,4 +314,81 @@ test('seeded distinguishes "no comments yet" from "not counted yet"', async () =
   // lets the reconcile rotation move on instead of picking it forever.
   const state = await readThreadState(db, POST)
   assert.equal(state.topLevelSeen, 0)
+})
+
+test('REGRESSION: a reply whose trigger beats its parent is not lost', async () => {
+  // Observed live on r/ffbottest: the self-test posted a top-level comment and
+  // then a reply, and Devvit delivered the REPLY's event first. The reply was
+  // dropped as a deeper reply -- and because it had already been claimed, the
+  // reconciliation walk then skipped it as a duplicate forever. The reply was
+  // permanently lost, and the parent stayed on the unanswered table despite
+  // having been answered.
+  const db = fakeRedis()
+  await trackPost(db, POST)
+  const base = {postId: POST, permalink: '/c/x', createdAtMs: 1_700_000_000_000}
+
+  // Reply arrives FIRST.
+  assert.equal(
+    await recordComment(db, {
+      ...base,
+      commentId: 't1_reply',
+      parentId: 't1_parent',
+      author: 'helper',
+      body: 'a substantive answer that arrived out of order',
+    }),
+    'orphan-reply',
+  )
+
+  // Nothing counted yet, and crucially nothing claimed either.
+  let state = await readThreadState(db, POST)
+  assert.equal(state.allCount['helper'], undefined)
+
+  // Parent arrives second, and must rescue the stashed reply.
+  assert.equal(
+    await recordComment(db, {
+      ...base,
+      commentId: 't1_parent',
+      parentId: POST,
+      author: 'asker',
+      body: 'the question',
+    }),
+    'top-level',
+  )
+
+  state = await readThreadState(db, POST)
+  assert.equal(state.allCount['helper'], 1, 'the reply must be counted')
+  assert.equal(state.helpCount['helper'], 1, 'and counted as substantive')
+  // One substantive reply is still <= UNANSWERED_MAX, so the row remains --
+  // but the point is that the reply reached the counters at all.
+  assert.equal(state.topLevelSeen, 1)
+})
+
+test('a rescued reply is not double counted by the reconciliation walk', async () => {
+  const db = fakeRedis()
+  await trackPost(db, POST)
+  const base = {postId: POST, permalink: '/c/x', createdAtMs: 1_700_000_000_000}
+  const reply = {
+    ...base,
+    commentId: 't1_reply',
+    parentId: 't1_parent',
+    author: 'helper',
+    body: 'a substantive answer that arrived out of order',
+  }
+  const parent = {
+    ...base,
+    commentId: 't1_parent',
+    parentId: POST,
+    author: 'asker',
+    body: 'the question',
+  }
+
+  await recordComment(db, reply)
+  await recordComment(db, parent)
+  const afterTriggers = await readThreadState(db, POST)
+
+  // The walk re-reads both, in tree order this time.
+  assert.equal(await recordComment(db, parent), 'duplicate')
+  assert.equal(await recordComment(db, reply), 'duplicate')
+
+  assert.deepEqual(await readThreadState(db, POST), afterTriggers)
 })

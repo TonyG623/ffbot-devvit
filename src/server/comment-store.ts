@@ -23,8 +23,9 @@ export const isTracked = (postId: string): Promise<boolean> =>
 
 export const recordComment = (
   c: IncomingComment,
-): Promise<'top-level' | 'direct-reply' | 'deeper-reply' | 'duplicate'> =>
-  counting.recordComment(db, c)
+): Promise<
+  'top-level' | 'direct-reply' | 'orphan-reply' | 'deeper-reply' | 'duplicate'
+> => counting.recordComment(db, c)
 
 export const markRemoved = (postId: string, commentId: string): Promise<void> =>
   counting.markRemoved(db, postId, commentId)

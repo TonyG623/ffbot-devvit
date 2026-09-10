@@ -81,8 +81,9 @@ export function parseCommentCreate(raw: unknown): ParsedComment | undefined {
     (post ? str(pick(post, 'id')) : undefined)
   if (!postId) return undefined
 
-  // The author name is on the comment, but the richer `author` object wins
-  // when present because the comment's copy is occasionally absent.
+  // MUST come from the sibling `author` object, not from `comment.author`.
+  // A live payload showed comment.author = "t2_2mjbzpp4by" -- a user ID, not a
+  // username. Reading it would put raw t2_ ids on the leaderboards.
   const authorObj = pick(envelope, 'author') as
     | Record<string, unknown>
     | undefined
