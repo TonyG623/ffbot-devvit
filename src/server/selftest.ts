@@ -24,7 +24,12 @@ import {reddit, redis} from '@devvit/web/server'
 /** Hardcoded. Not configurable, not derived from context. */
 const ONLY_SUBREDDIT = 'ffbottest'
 
-const KEY_DONE = 'ffbot:selftest:done'
+/**
+ * Bumped to re-run after the out-of-order fix. Run 1 proved triggers fire and
+ * the payload parses, and exposed that a reply's event can be delivered before
+ * its parent's. Run 2 verifies the pending-reply rescue against that.
+ */
+const KEY_DONE = 'ffbot:selftest:done:2'
 
 /** Long enough to clear the >20 character substantive-reply threshold. */
 const REPLY_TEXT =
@@ -65,9 +70,10 @@ export async function maybeRunSelfTest(
     })
     console.log(`SELFTEST posted reply ${reply.id} to ${top.id}`)
     console.log(
-      'SELFTEST done. Expect two TRIGGER lines if Devvit delivers events for ' +
-        'the app account; silence here means self-authored comments are ' +
-        'filtered and a human comment is still needed.',
+      'SELFTEST done. Watch for COUNTED lines for BOTH comments. If the reply ' +
+        'event again beats the parent it should log orphan-reply first and ' +
+        'then be rescued when the parent lands; the thread must end up with a ' +
+        'top helper rather than none.',
     )
   } catch (err) {
     console.warn(`SELFTEST failed: ${String(err)}`)
