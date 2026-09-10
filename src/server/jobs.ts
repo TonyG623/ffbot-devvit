@@ -92,6 +92,43 @@ async function currentBotPosts(
   return [...seen.values()]
 }
 
+/**
+ * Reddit rejects a submit that carries flair TEXT without a flair ID
+ * ("Can't set flair_text without a flair_id"), so resolve the subreddit's
+ * flair template by its text and submit the id instead.
+ *
+ * Templates are fetched once per subreddit per warm process.
+ */
+let flairCache: {sub: string; templates: {id: string; text: string}[]} | undefined
+
+async function flairIdForText(
+  sub: string,
+  text: string,
+): Promise<string | undefined> {
+  if (flairCache?.sub !== sub) {
+    try {
+      const templates = await reddit.getPostFlairTemplates(sub)
+      flairCache = {
+        sub,
+        templates: templates.map(t => ({id: t.id, text: t.text})),
+      }
+      console.log(
+        `Flair templates on r/${sub}: ${flairCache.templates.map(t => `"${t.text}"`).join(', ') || '(none)'}`,
+      )
+    } catch (err) {
+      console.warn(`WARN: could not read flair templates for r/${sub}: ${String(err)}`)
+      flairCache = {sub, templates: []}
+    }
+  }
+  const hit = flairCache.templates.find(t => t.text === text)
+  if (!hit) {
+    console.warn(
+      `WARN: no post flair template matching "${text}" on r/${sub}; submitting without flair`,
+    )
+  }
+  return hit?.id
+}
+
 function threadTitle(
   cfg: ThreadConfig,
   day: string,
@@ -142,23 +179,31 @@ export async function runCycle(): Promise<void> {
     }
 
     console.log(`SUBMITTING THREAD ${title}`)
-    // Flair is set AT SUBMIT, not after. Subreddits can require post flair
-    // (r/ffbottest does), in which case a bare submit is rejected outright and
-    // the Python's submit-then-flair ordering never gets a chance to run.
+    // Flair goes on AT SUBMIT. Subreddits can require post flair (r/ffbottest
+    // does), and a bare submit is rejected outright there, so the Python's
+    // submit-then-flair ordering would never post at all.
+    const flairId = await flairIdForText(sub, cfg.flair_text)
     const post = await reddit.submitPost({
       subredditName: sub,
       title,
       text: body,
-      flairText: cfg.flair_text,
+      ...(flairId ? {flairId} : {}),
     })
     await post.setSuggestedCommentSort('NEW')
-    // Re-apply to attach the stylesheet class, which submitPost cannot set.
-    await reddit.setPostFlair({
-      subredditName: sub,
-      postId: post.id,
-      text: cfg.flair_text,
-      cssClass: cfg.flair_css,
-    })
+    if (!flairId) {
+      // No template matched. Fall back to setting flair directly, as the
+      // Python did. This fails on subreddits that require a template.
+      try {
+        await reddit.setPostFlair({
+          subredditName: sub,
+          postId: post.id,
+          text: cfg.flair_text,
+          cssClass: cfg.flair_css,
+        })
+      } catch (err) {
+        console.warn(`WARN: could not set flair on ${post.id}: ${String(err)}`)
+      }
+    }
     if (cfg.sticky) await post.sticky(2)
     threads.push({postId: post.id, body, config: cfg})
   }
@@ -345,18 +390,25 @@ export async function buildIndex(): Promise<void> {
   }
 
   console.log(`SUBMITTING THREAD ${title}`)
+  const indexFlairId = await flairIdForText(sub, 'Index')
   const post = await reddit.submitPost({
     subredditName: sub,
     title,
     text: body,
-    flairText: 'Index',
+    ...(indexFlairId ? {flairId: indexFlairId} : {}),
   })
-  await reddit.setPostFlair({
-    subredditName: sub,
-    postId: post.id,
-    text: 'Index',
-    cssClass: 'index',
-  })
+  if (!indexFlairId) {
+    try {
+      await reddit.setPostFlair({
+        subredditName: sub,
+        postId: post.id,
+        text: 'Index',
+        cssClass: 'index',
+      })
+    } catch (err) {
+      console.warn(`WARN: could not set Index flair: ${String(err)}`)
+    }
+  }
   await post.sticky(1)
   await post.lock()
 }
@@ -393,18 +445,25 @@ export async function postNewsAndDiscussions(): Promise<string | undefined> {
   }
 
   console.log(`SUBMITTING: ${title}`)
+  const newsFlairId = await flairIdForText(sub, 'Daily Thread')
   const post = await reddit.submitPost({
     subredditName: sub,
     title,
     text: body,
-    flairText: 'Daily Thread',
+    ...(newsFlairId ? {flairId: newsFlairId} : {}),
   })
-  await reddit.setPostFlair({
-    subredditName: sub,
-    postId: post.id,
-    text: 'Daily Thread',
-    cssClass: 'daily',
-  })
+  if (!newsFlairId) {
+    try {
+      await reddit.setPostFlair({
+        subredditName: sub,
+        postId: post.id,
+        text: 'Daily Thread',
+        cssClass: 'daily',
+      })
+    } catch (err) {
+      console.warn(`WARN: could not set news flair: ${String(err)}`)
+    }
+  }
   await post.lock()
   return post.permalink
 }

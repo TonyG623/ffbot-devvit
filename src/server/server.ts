@@ -24,7 +24,11 @@ async function route(
   reqMsg: IncomingMessage,
   rspMsg: ServerResponse,
 ): Promise<void> {
-  const path = reqMsg.url ?? ''
+  // Match on the pathname only. Devvit may append a query string, and a
+  // trailing slash would otherwise miss.
+  const rawUrl = reqMsg.url ?? ''
+  const path = (rawUrl.split('?')[0] ?? '').replace(/\/+$/, '') || '/'
+  console.log(`REQ ${reqMsg.method} ${rawUrl} -> ${path}`)
 
   if (reqMsg.method !== 'POST') {
     writeJson<ErrorRsp>(404, {error: 'not found', status: 404}, rspMsg)
