@@ -276,30 +276,44 @@ export async function processThread(data: {
   // instead, for a flat ~20s of API time per cycle no matter how many threads
   // there are.
   if (phase === 'walk') {
-    // An UNSEEDED thread jumps the queue. Rendering a thread whose counters
-    // have never been populated publishes an empty leaderboard and an empty
-    // unanswered table over real content, so a cold start (first deploy, or
-    // after the counters expire) must seed before it renders. A genuinely
-    // empty thread is seeded with zero counts and does not keep jumping.
-    let targetIndex = run.reconcileIndex
-    for (const [i, t] of run.threads.entries()) {
-      if (!(await isSeeded(t.postId))) {
-        targetIndex = i
-        break
+    // SEEDING comes first and is not rotated. A thread with no counters cannot
+    // be rendered at all (see renderOne), so on a cold start the priority is
+    // getting every thread countable, not spreading repairs evenly. Seed as
+    // many as the budget allows; a freshly posted thread is nearly free.
+    let seededSomething = false
+    for (const t of run.threads) {
+      if (Date.now() > deadline) {
+        await chain('walk', cursor, skip)
+        return
       }
-    }
+      if (await isSeeded(t.postId)) continue
 
-    const target = run.threads[targetIndex]
-    if (target) {
-      const result = await reconcileOne(target, deadline, skip)
+      const result = await reconcileOne(t, deadline, skip)
       if (result.hitBudget) {
+        // Resume mid-thread next job; it stays unseeded so it is picked again.
         await chain('walk', cursor, result.nextSkip)
         return
       }
-      // Only a COMPLETE pass counts as seeded; a truncated one leaves it
-      // unseeded so the next cycle finishes the job before rendering it.
-      await markSeeded(target.postId)
+      // Only a COMPLETE pass counts as seeded.
+      await markSeeded(t.postId)
+      skip = 0
+      seededSomething = true
     }
+
+    // Steady state: everything is seeded, so spend the remaining budget
+    // repairing ONE thread, rotating. Repairing all of them every cycle would
+    // re-incur the rate-limited walk cost this design exists to avoid.
+    if (!seededSomething) {
+      const target = run.threads[run.reconcileIndex]
+      if (target && Date.now() < deadline) {
+        const result = await reconcileOne(target, deadline, skip)
+        if (result.hitBudget) {
+          await chain('walk', cursor, result.nextSkip)
+          return
+        }
+      }
+    }
+
     phase = 'render'
     cursor = 0
     skip = 0
@@ -383,9 +397,11 @@ async function reconcileOne(
     }
   }
 
-  if (repaired > 0) {
-    console.log(`RECONCILE ${thread.postId} repaired ${repaired} comments`)
-  }
+  console.log(
+    `RECONCILE ${thread.postId} read ${walked.comments.length} comments ` +
+      `(${walked.topLevelSeen} top-level), folded ${repaired} new` +
+      (walked.partial ? ', PARTIAL' : ''),
+  )
 
   if (walked.partial) {
     const nextSkip = skip + walked.topLevelSeen
@@ -399,6 +415,15 @@ async function reconcileOne(
 
 async function renderOne(run: RunState, thread: RunThread): Promise<void> {
   if (thread.config.no_table) return
+
+  // Do NOT render a thread whose counters have not been seeded. Reconcile only
+  // seeds one thread per cycle, so on a cold start the rest have empty state --
+  // and publishing an empty leaderboard over a thread full of real comments is
+  // worse than leaving last cycle's body alone for another fifteen minutes.
+  if (!(await isSeeded(thread.postId))) {
+    console.log(`SKIPPING ${thread.postId}: counters not seeded yet`)
+    return
+  }
   const acc = await readThreadState(thread.postId)
   const body = composeThreadBody(thread.body, acc, run.helpCountAll)
   console.log(`EDITING THREAD ${thread.postId}`)
