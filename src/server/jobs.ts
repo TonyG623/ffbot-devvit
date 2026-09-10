@@ -30,6 +30,7 @@ import {
   threadDate,
   threadZone,
 } from './dates.ts'
+import {maybeRunSelfTest} from './selftest.ts'
 import {
   loadRun,
   nextReconcileCursor,
@@ -221,6 +222,12 @@ export async function runCycle(): Promise<void> {
   // which posts to count. Register BEFORE saving the run so no comment posted
   // between submit and save is missed.
   for (const t of threads) await trackPost(t.postId)
+
+  // TEMPORARY: fires at most once, and only on r/ffbottest. See selftest.ts.
+  await maybeRunSelfTest(
+    sub,
+    threads.map(t => t.postId),
+  )
 
   const reconcileIndex =
     threads.length > 0 ? (await nextReconcileCursor()) % threads.length : 0
