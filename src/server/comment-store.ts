@@ -34,6 +34,12 @@ export const clearRemoved = (
   commentId: string,
 ): Promise<void> => counting.clearRemoved(db, postId, commentId)
 
+export const markSeeded = (postId: string): Promise<void> =>
+  counting.markSeeded(db, postId)
+
+export const isSeeded = (postId: string): Promise<boolean> =>
+  counting.isSeeded(db, postId)
+
 export const readThreadState = (postId: string): Promise<ThreadAccumulator> =>
   counting.readThreadState(db, postId)
 

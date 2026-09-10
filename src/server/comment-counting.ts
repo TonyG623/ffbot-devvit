@@ -71,6 +71,7 @@ const keySeen = (postId: string): string => `ffbot:cc:${postId}:seen`
 const keySubReplies = (postId: string): string =>
   `ffbot:cc:${postId}:subreplies`
 const keyRemoved = (postId: string): string => `ffbot:cc:${postId}:removed`
+const keySeeded = (postId: string): string => `ffbot:cc:${postId}:seeded`
 const keyHelp = (postId: string): string => `ffbot:cc:${postId}:help`
 const keyAll = (postId: string): string => `ffbot:cc:${postId}:all`
 
@@ -162,6 +163,27 @@ export async function recordComment(
     }
   }
   return 'direct-reply'
+}
+
+/**
+ * Mark a thread as having had at least one COMPLETE reconciliation pass.
+ *
+ * This is what distinguishes "no comments yet" from "not counted yet", and the
+ * two must not be confused: rendering an uncounted thread publishes an empty
+ * leaderboard and an empty unanswered table over real content. A thread that is
+ * genuinely empty is seeded and has zero counts; a thread that has never been
+ * reconciled is not seeded and gets priority for the next repair pass.
+ */
+export async function markSeeded(db: RedisLike, postId: string): Promise<void> {
+  await db.set(keySeeded(postId), '1')
+  await db.expire(keySeeded(postId), TTL_SECONDS)
+}
+
+export async function isSeeded(
+  db: RedisLike,
+  postId: string,
+): Promise<boolean> {
+  return (await db.get(keySeeded(postId))) === '1'
 }
 
 /** Flag a top-level comment as removed so it drops off the unanswered table. */
@@ -273,6 +295,7 @@ export async function clearThreadState(
     db.del(keySeen(postId)),
     db.del(keySubReplies(postId)),
     db.del(keyRemoved(postId)),
+    db.del(keySeeded(postId)),
     db.del(keyHelp(postId)),
     db.del(keyAll(postId)),
   ])

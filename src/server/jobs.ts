@@ -15,7 +15,9 @@ import {context, reddit, scheduler, settings} from '@devvit/web/server'
 import type {FfbotConfig, ThreadConfig} from '../shared/types.ts'
 import {
   clearRemoved,
+  isSeeded,
   markRemoved,
+  markSeeded,
   readThreadState,
   recordComment,
   trackPost,
@@ -274,13 +276,29 @@ export async function processThread(data: {
   // instead, for a flat ~20s of API time per cycle no matter how many threads
   // there are.
   if (phase === 'walk') {
-    const target = run.threads[run.reconcileIndex]
+    // An UNSEEDED thread jumps the queue. Rendering a thread whose counters
+    // have never been populated publishes an empty leaderboard and an empty
+    // unanswered table over real content, so a cold start (first deploy, or
+    // after the counters expire) must seed before it renders. A genuinely
+    // empty thread is seeded with zero counts and does not keep jumping.
+    let targetIndex = run.reconcileIndex
+    for (const [i, t] of run.threads.entries()) {
+      if (!(await isSeeded(t.postId))) {
+        targetIndex = i
+        break
+      }
+    }
+
+    const target = run.threads[targetIndex]
     if (target) {
       const result = await reconcileOne(target, deadline, skip)
       if (result.hitBudget) {
         await chain('walk', cursor, result.nextSkip)
         return
       }
+      // Only a COMPLETE pass counts as seeded; a truncated one leaves it
+      // unseeded so the next cycle finishes the job before rendering it.
+      await markSeeded(target.postId)
     }
     phase = 'render'
     cursor = 0

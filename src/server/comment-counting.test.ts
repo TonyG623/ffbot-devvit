@@ -17,6 +17,8 @@ import {readFileSync} from 'node:fs'
 import {test} from 'node:test'
 import {
   type IncomingComment,
+  isSeeded,
+  markSeeded,
   type RedisLike,
   readThreadState,
   recordComment,
@@ -291,4 +293,21 @@ test('a removed top-level comment drops off the table', async () => {
   assert.equal(state.unanswered.length, 0)
   assert.equal(state.unansweredTotal, 0)
   assert.equal(state.topLevelSeen, 1, 'still counts as a comment on the thread')
+})
+
+test('seeded distinguishes "no comments yet" from "not counted yet"', async () => {
+  const db = fakeRedis()
+  await trackPost(db, POST)
+
+  // A thread nobody has reconciled yet. Rendering it now would publish an
+  // empty table over real content, so it must not look like a counted thread.
+  assert.equal(await isSeeded(db, POST), false)
+
+  await markSeeded(db, POST)
+  assert.equal(await isSeeded(db, POST), true)
+
+  // A genuinely empty thread is seeded AND has zero counts. That pair is what
+  // lets the reconcile rotation move on instead of picking it forever.
+  const state = await readThreadState(db, POST)
+  assert.equal(state.topLevelSeen, 0)
 })
