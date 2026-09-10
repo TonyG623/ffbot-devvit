@@ -226,7 +226,9 @@ async function chain(phase: Phase, cursor: number, skip = 0): Promise<void> {
   await scheduler.runJob({
     name: JOB_PROCESS,
     data: {phase, cursor, skip},
-    runAt: new Date(Date.now() + 5_000),
+    // No delay. Each hop may already cost up to a minute of scheduler
+    // granularity, so adding sleep on top is pure latency.
+    runAt: new Date(),
   })
 }
 
@@ -241,39 +243,65 @@ export async function processThread(data: {
     return
   }
 
-  const thread = run.threads[data.cursor]
-  if (!thread) {
-    // Phase complete.
-    if (data.phase === 'walk') {
-      run.cursor = 0
-      await saveRun(run)
-      await chain('render', 0)
-    } else {
-      await scheduler.runJob({
-        name: JOB_INDEX,
-        runAt: new Date(Date.now() + 5_000),
-      })
-    }
-    return
-  }
+  // Process as many threads as fit in this invocation. Each chained job may
+  // cost up to a minute of scheduler granularity, so one-job-per-thread makes
+  // a cycle take longer than the cron interval once a subreddit has a dozen
+  // daily threads, and cycles begin to overlap.
+  const deadline = Date.now() + BUDGET_MS
+  let phase = data.phase
+  let cursor = data.cursor
+  let skip = data.skip
 
-  if (data.phase === 'walk') {
-    await walkOne(run, thread, data.cursor, data.skip)
-  } else {
-    await renderOne(run, thread, data.cursor)
+  for (;;) {
+    const thread = run.threads[cursor]
+
+    if (!thread) {
+      if (phase === 'walk') {
+        phase = 'render'
+        cursor = 0
+        skip = 0
+        run.cursor = 0
+        await saveRun(run)
+        continue
+      }
+      console.log('All threads rendered; building index')
+      await scheduler.runJob({name: JOB_INDEX, runAt: new Date()})
+      return
+    }
+
+    if (Date.now() > deadline) {
+      console.log(`Budget spent; continuing at ${phase} cursor ${cursor}`)
+      await chain(phase, cursor, skip)
+      return
+    }
+
+    if (phase === 'walk') {
+      const partial = await walkOne(run, thread, deadline, skip)
+      if (partial.hitBudget) {
+        await chain('walk', cursor, partial.nextSkip)
+        return
+      }
+      skip = 0
+    } else {
+      await renderOne(run, thread)
+    }
+
+    cursor++
+    run.cursor = cursor
+    await saveRun(run)
   }
 }
 
 async function walkOne(
   run: RunState,
   thread: RunThread,
-  cursor: number,
+  deadline: number,
   skip: number,
-): Promise<void> {
-  const deadline = Date.now() + BUDGET_MS
+): Promise<{hitBudget: boolean; nextSkip: number}> {
   const walked = await walkThread(thread.postId, deadline, skip)
 
-  const acc = (await loadAccumulator(run.runId, thread.postId)) ??
+  const acc =
+    (await loadAccumulator(run.runId, thread.postId)) ??
     emptyAccumulator(thread.postId)
   mergeCounts(acc.helpCount, walked.substantive)
   acc.unanswered.push(...walked.unanswered)
@@ -285,43 +313,33 @@ async function walkOne(
   await saveRun(run)
 
   if (walked.partial) {
+    const nextSkip = skip + walked.topLevelSeen
     console.log(
-      `Thread ${thread.postId} hit the time budget after ${skip + walked.topLevelSeen} comments; continuing`,
+      `Thread ${thread.postId} hit the time budget after ${nextSkip} comments; continuing`,
     )
-    await chain('walk', cursor, skip + walked.topLevelSeen)
-  } else {
-    run.cursor = cursor + 1
-    await saveRun(run)
-    await chain('walk', cursor + 1)
+    return {hitBudget: true, nextSkip}
   }
+  return {hitBudget: false, nextSkip: 0}
 }
 
-async function renderOne(
-  run: RunState,
-  thread: RunThread,
-  cursor: number,
-): Promise<void> {
-  if (!thread.config.no_table) {
-    const acc = await loadAccumulator(run.runId, thread.postId)
-    if (acc) {
-      const rows = fillRowCounts(acc.unanswered, acc.helpCount, run.helpCountAll)
-      let body = thread.body
-      body += leaderTable(acc.helpCount)
-      body += unansweredTable({
-        rows,
-        topLevelCount: acc.topLevelSeen,
-        length: 40,
-        text: true,
-        showPercents: false,
-      })
-      console.log(`EDITING THREAD ${thread.postId}`)
-      const post = await reddit.getPostById(thread.postId as `t3_${string}`)
-      await post.edit({text: body})
-    }
-  }
-  run.cursor = cursor + 1
-  await saveRun(run)
-  await chain('render', cursor + 1)
+async function renderOne(run: RunState, thread: RunThread): Promise<void> {
+  if (thread.config.no_table) return
+  const acc = await loadAccumulator(run.runId, thread.postId)
+  if (!acc) return
+
+  const rows = fillRowCounts(acc.unanswered, acc.helpCount, run.helpCountAll)
+  let body = thread.body
+  body += leaderTable(acc.helpCount)
+  body += unansweredTable({
+    rows,
+    topLevelCount: acc.topLevelSeen,
+    length: 40,
+    text: true,
+    showPercents: false,
+  })
+  console.log(`EDITING THREAD ${thread.postId}`)
+  const post = await reddit.getPostById(thread.postId as `t3_${string}`)
+  await post.edit({text: body})
 }
 
 /** Port of post_index_thread + calculate_index_length. */
