@@ -1,6 +1,6 @@
 {
   "$schema": "https://developers.reddit.com/schema/config-file.v1.json",
-  "name": "ffbot",
+  "name": "ffbot-app",
   "server": {},
   "permissions": {
     "reddit": {
@@ -58,5 +58,8 @@
   },
   "scripts": {
     "dev": "npm run watch"
+  },
+  "dev": {
+    "subreddit": "ffbottest"
   }
 }
