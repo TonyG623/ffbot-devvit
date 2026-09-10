@@ -1,7 +1,6 @@
 import {once} from 'node:events'
 import type {IncomingMessage, ServerResponse} from 'node:http'
 import type {PartialJsonValue, UiResponse} from '@devvit/web/shared'
-import {type BenchVariant, runBenchStep, startBench} from './bench.ts'
 import {buildIndex, processThread, runCycle} from './jobs.ts'
 import {onCommentCreate} from './triggers.ts'
 
@@ -62,35 +61,6 @@ async function route(
       const raw = await readJson<unknown>(reqMsg)
       await onCommentCreate(raw)
       writeJson<TaskResponse>(200, {status: 'ok'}, rspMsg)
-      return
-    }
-    case '/internal/scheduler/bench': {
-      const body =
-        await readJson<TaskRequest<{index: number; variant: BenchVariant}>>(
-          reqMsg,
-        )
-      const data = body.data ?? {index: 0, variant: 'current' as const}
-      await runBenchStep(data)
-      writeJson<TaskResponse>(200, {status: 'ok'}, rspMsg)
-      return
-    }
-    case '/internal/menu/bench': {
-      // READ-ONLY. Times the comment walk against live high-volume threads;
-      // writes nothing anywhere. Remove before shipping the port.
-      const count = await startBench('FFBot', 'fantasyfootball')
-      writeJson<UiResponse>(
-        200,
-        {
-          showToast: {
-            text:
-              count > 0
-                ? `Benchmarking ${count} live threads; watch the playtest log.`
-                : 'No target threads found on r/fantasyfootball.',
-            appearance: count > 0 ? 'success' : 'neutral',
-          },
-        },
-        rspMsg,
-      )
       return
     }
     case '/internal/menu/run-now': {

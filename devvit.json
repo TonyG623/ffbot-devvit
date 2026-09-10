@@ -20,9 +20,6 @@
       },
       "ffbot-build-index": {
         "endpoint": "/internal/scheduler/build-index"
-      },
-      "ffbot-bench": {
-        "endpoint": "/internal/scheduler/bench"
       }
     }
   },
@@ -37,13 +34,6 @@
         "forUserType": "moderator",
         "location": "subreddit",
         "endpoint": "/internal/menu/run-now"
-      },
-      {
-        "label": "[FFBot] Benchmark walk (read-only)",
-        "description": "Time the comment walk against live r/fantasyfootball threads. Writes nothing.",
-        "forUserType": "moderator",
-        "location": "subreddit",
-        "endpoint": "/internal/menu/bench"
       }
     ]
   },
