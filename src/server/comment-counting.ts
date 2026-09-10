@@ -144,7 +144,15 @@ export async function recordComment(
     if (c.removed) await markRemoved(db, c.postId, c.commentId)
 
     // Any replies that arrived BEFORE this comment did can now be applied.
-    await drainPending(db, c.postId, c.commentId)
+    const rescued = await drainPending(db, c.postId, c.commentId)
+    if (rescued > 0) {
+      // Worth logging loudly: this is trigger reordering caught in the act,
+      // and before the fix every one of these was a silently lost reply.
+      console.log(
+        `RESCUED ${rescued} out-of-order repl${rescued === 1 ? 'y' : 'ies'} ` +
+          `for ${c.commentId}`,
+      )
+    }
     return 'top-level'
   }
 

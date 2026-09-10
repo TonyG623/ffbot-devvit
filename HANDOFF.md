@@ -95,24 +95,30 @@ Config lives on the subreddit wiki at `r/<sub>/wiki/ffbot` (YAML in a 4-space
 indented block), with per-thread body pages at `r/<sub>/wiki/ffbot/<name>`.
 Config is re-read every cycle, so wiki edits take effect with no redeploy.
 
-## THE ONE UNVERIFIED ASSUMPTION
+## Trigger payload: VERIFIED 2026-09-10
 
-`@devvit/web` does not export a type for what Devvit POSTs to a trigger
-endpoint. `trigger-payload.ts` is written against the protobuf definitions
-(`CommentCreate` wrapping `CommentV2`) — so the wire shape is **inferred, not
-contracted**. The parser is deliberately permissive and returns undefined
-rather than throwing.
+`@devvit/web` exports no type for a trigger POST body, so `trigger-payload.ts`
+was written against the protobufs and the wire shape was inferred. It has now
+been confirmed against a real delivered event on r/ffbottest. Every field the
+counting rules need parses correctly.
 
-`triggers.ts` logs the first payload of each process in full:
+Two things that came out of that verification, both load-bearing:
 
-```
-TRIGGER first payload sample: {...}
-TRIGGER parsed as: {...}
-```
+- **`comment.author` is a USER ID, not a username.** The live payload carried
+  `"author":"t2_2mjbzpp4by"`. The correct name is on the SIBLING `author`
+  object as `.name`. The parser already preferred that object, so this was
+  never a bug — but do not "simplify" it to read `comment.author`, or raw `t2_`
+  ids go on the leaderboards.
 
-**Read that log line before trusting any published number.** If `parsed as`
-shows empty/missing fields, fix `trigger-payload.ts` against what the sample
-actually contains. This is the single highest-risk thing in the port.
+- **TRIGGERS ARE NOT ORDERED.** Observed twice: a comment and a reply were
+  posted a second apart, and Devvit delivered the REPLY's event first, both
+  times. Anything that assumes a parent is already known when its reply arrives
+  is wrong. See `drainPending` in `comment-counting.ts`; a `RESCUED n
+  out-of-order replies` log line is that reordering caught in the act.
+
+`triggers.ts` still logs the first payload of each process
+(`TRIGGER first payload sample:` / `TRIGGER parsed as:`), which is the fastest
+way to re-check this if counts ever look wrong.
 
 ## Verified live on r/ffbottest
 
@@ -129,9 +135,37 @@ actually contains. This is the single highest-risk thing in the port.
 - Index thread: posted, flaired, **stickied and locked** (so the app account's
   moderator permissions are real)
 - Comment counting on live comments through Devvit's API
+- **The trigger path end to end** (2026-09-10): comment posted -> onCommentCreate
+  delivered -> payload parsed -> Redis counters updated -> table rendered from
+  Redis. Confirmed by the before/after on the same thread:
 
-Offline: 26 unit tests, including the counting rules run against 30 real
-comments captured from a live r/fantasyfootball thread (`counting.test.ts`).
+  ```
+  before the ordering fix:  1 top-level, 1 unanswered, top helper none
+  after:                    2 top-level, 1 unanswered, top helper ffbot-app=1
+  ```
+
+- Reconciliation folding real comments into the counters (`RECONCILE ... read 2
+  comments: 1 top-level, 1 replies`) and rendering them (`top helper
+  tonyg623=1`)
+- Cold-start seeding: all threads seeded in one pass, then rendered
+
+Offline: 61 unit tests. The load-bearing one replays 30 real comments captured
+from a live r/fantasyfootball thread through the TRIGGER path and asserts the
+result is identical to what the old walk produced (`comment-counting.test.ts`).
+
+Note what the tests did NOT catch: the out-of-order trigger bug. The
+equivalence test fed events in tree order, because that is the order the author
+assumed. It took a real delivery to disprove the assumption. Green tests were
+not sufficient here and are not sufficient for the remaining cutover risks.
+
+## BEFORE SHIPPING - remove the scaffolding
+
+- `src/server/selftest.ts` and its call in `runCycle`. It posts real comments.
+  Hardcoded to r/ffbottest and guarded to run once per key, but it has no place
+  in production.
+- `src/server/bench.ts`, its `/internal/menu/bench` and
+  `/internal/scheduler/bench` routes, and the matching `devvit.json` entries.
+- The two self-test comments left on r/ffbottest.
 
 ## Still to test
 
