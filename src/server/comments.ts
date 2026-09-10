@@ -24,12 +24,35 @@ export const SUBSTANTIVE_REPLY_LENGTH = 20
 /** A top-level comment with `<= UNANSWERED_MAX` substantive replies is "unanswered". */
 export const UNANSWERED_MAX = 1
 
+/**
+ * Reddit reports removed/deleted accounts under this name. PRAW gave the
+ * Python `None` here, which made every `author.name` access raise inside a
+ * bare `except: pass`, so deleted authors silently dropped out of the counts.
+ * Devvit hands back the literal string instead, which is TRUTHY — so without
+ * this check "[deleted]" climbs the leaderboards as if it were a real user.
+ */
+export const DELETED_AUTHOR = '[deleted]'
+
+export function isRealAuthor(name: string): boolean {
+  return !!name && name !== DELETED_AUTHOR
+}
+
+/** One comment as read by the reconciliation walk, top-level or direct reply. */
+export type WalkedComment = {
+  commentId: string
+  /** `t3_…` for a top-level comment, `t1_…` for a direct reply. */
+  parentId: string
+  authorName: string
+  body: string
+  permalink: string
+  createdAtMs: number
+  removed: boolean
+  isTopLevel: boolean
+}
+
 export type WalkResult = {
-  /** Length-filtered per-author counts (the "# Helped in thread" column). */
-  substantive: Record<string, number>
-  /** Unfiltered per-author counts (leaderboards, "# Helped in all threads"). */
-  allReplies: Record<string, number>
-  unanswered: UnansweredRow[]
+  /** Everything read this pass, for folding into the incremental counters. */
+  comments: WalkedComment[]
   topLevelSeen: number
   /** True when the time budget ran out before the listing was exhausted. */
   partial: boolean
@@ -53,6 +76,12 @@ export type Accumulation = {
   allReplies: Record<string, number>
   unanswered: UnansweredRow[]
   topLevelSeen: number
+  /**
+   * Every comment that met the unanswered rule, INCLUDING ones whose author is
+   * deleted. The Python renders rows from a list that drops deleted authors but
+   * computes "% helped" from one that keeps them, so the two genuinely differ.
+   */
+  unansweredTotal: number
   /** Authors already listed as unanswered; the Python lists each author once. */
   seenAuthors: Set<string>
 }
@@ -63,6 +92,7 @@ export function emptyAccumulation(): Accumulation {
     allReplies: {},
     unanswered: [],
     topLevelSeen: 0,
+    unansweredTotal: 0,
     seenAuthors: new Set(),
   }
 }
@@ -81,20 +111,25 @@ export function accumulateComment(acc: Accumulation, c: RawComment): void {
 
   let substantiveReplies = 0
   for (const reply of c.replies) {
-    if (!reply.authorName) continue
+    const substantive = reply.body.length > SUBSTANTIVE_REPLY_LENGTH
+    // A long reply answers the question whoever wrote it, so this counter runs
+    // before the author check — the Python's length test never touched .author.
+    if (substantive) substantiveReplies++
+    if (!isRealAuthor(reply.authorName)) continue
     bump(acc.allReplies, reply.authorName)
-    if (reply.body.length > SUBSTANTIVE_REPLY_LENGTH) {
-      substantiveReplies++
-      bump(acc.substantive, reply.authorName)
-    }
+    if (substantive) bump(acc.substantive, reply.authorName)
   }
 
-  if (
-    substantiveReplies <= UNANSWERED_MAX &&
-    !c.removed &&
-    c.authorName &&
-    !acc.seenAuthors.has(c.authorName)
-  ) {
+  if (substantiveReplies > UNANSWERED_MAX || c.removed) return
+
+  // Counted for the "% helped" figure even when the author is gone...
+  if (!isRealAuthor(c.authorName)) {
+    acc.unansweredTotal++
+    return
+  }
+  if (!acc.seenAuthors.has(c.authorName)) {
+    // ...but only a real author gets a row in the table.
+    acc.unansweredTotal++
     acc.seenAuthors.add(c.authorName)
     acc.unanswered.push({
       author: c.authorName,
@@ -128,7 +163,8 @@ export async function walkThread(
   deadline: number,
   skip = 0,
 ): Promise<WalkResult> {
-  const acc = emptyAccumulation()
+  const comments: WalkedComment[] = []
+  let topLevelSeen = 0
   let partial = false
 
   const post = await reddit.getPostById(postId as `t3_${string}`)
@@ -142,31 +178,40 @@ export async function walkThread(
       partial = true
       break
     }
+    topLevelSeen++
 
-    let replies: {authorName: string; body: string}[] = []
-    try {
-      const list = await comment.replies.all()
-      replies = list.map(r => ({authorName: r.authorName, body: r.body ?? ''}))
-    } catch (err) {
-      console.warn(`WARN: could not read replies for ${comment.id}: ${String(err)}`)
-    }
-
-    accumulateComment(acc, {
+    comments.push({
+      commentId: comment.id,
+      parentId: comment.parentId,
       authorName: comment.authorName,
-      removed: comment.removed,
-      createdAtMs: comment.createdAt.getTime(),
+      body: comment.body ?? '',
       permalink: comment.permalink,
-      replies,
+      createdAtMs: comment.createdAt.getTime(),
+      removed: comment.removed,
+      isTopLevel: true,
     })
+
+    try {
+      for (const reply of await comment.replies.all()) {
+        comments.push({
+          commentId: reply.id,
+          parentId: comment.id,
+          authorName: reply.authorName,
+          body: reply.body ?? '',
+          permalink: reply.permalink,
+          createdAtMs: reply.createdAt.getTime(),
+          removed: reply.removed,
+          isTopLevel: false,
+        })
+      }
+    } catch (err) {
+      console.warn(
+        `WARN: could not read replies for ${comment.id}: ${String(err)}`,
+      )
+    }
   }
 
-  return {
-    substantive: acc.substantive,
-    allReplies: acc.allReplies,
-    unanswered: acc.unanswered,
-    topLevelSeen: acc.topLevelSeen,
-    partial,
-  }
+  return {comments, topLevelSeen, partial}
 }
 
 /** Merge counts from `src` into `dst` in place. */
@@ -199,8 +244,10 @@ export function emptyAccumulator(postId: string): ThreadAccumulator {
   return {
     postId,
     helpCount: {},
+    allCount: {},
     unanswered: [],
     topLevelSeen: 0,
+    unansweredTotal: 0,
     partial: false,
   }
 }

@@ -10,6 +10,7 @@ import type {
   ThreadAccumulator,
   ThreadConfig,
 } from '../shared/types.ts'
+import type {ConfigStatus} from './config-status.ts'
 
 const KEY_CONFIG_STATUS = 'ffbot:config:status'
 const KEY_CONFIG_CACHE = 'ffbot:config:cache'
@@ -31,13 +32,15 @@ export type RunState = {
   threads: RunThread[]
   /** Index of the next thread to process. */
   cursor: number
+  /** Which single thread this cycle repairs. Rotates, one per cycle. */
+  reconcileIndex: number
   /** Cross-thread helper counts, accumulated as threads are processed. */
   helpCountAll: Record<string, number>
   /** Permalink of the News and Discussions thread, when one was posted. */
   newsLink?: string
 }
 
-export type ConfigStatus = 'ok' | 'failed' | 'unknown'
+export type {ConfigStatus} from './config-status.ts'
 
 export async function getConfigStatus(): Promise<ConfigStatus> {
   const raw = await redis.get(KEY_CONFIG_STATUS)
@@ -61,6 +64,17 @@ export async function loadCachedConfig(): Promise<FfbotConfig | undefined> {
   } catch {
     return undefined
   }
+}
+
+const KEY_RECONCILE = 'ffbot:reconcile:cursor'
+
+/**
+ * Monotonic counter used to rotate which thread gets reconciled. Reconciling
+ * every thread every cycle would re-incur exactly the rate-limited walk cost
+ * the trigger counters exist to avoid, so cycles take turns.
+ */
+export async function nextReconcileCursor(): Promise<number> {
+  return await redis.incrBy(KEY_RECONCILE, 1)
 }
 
 export async function saveRun(run: RunState): Promise<void> {

@@ -14,12 +14,14 @@
 import {context, reddit, scheduler, settings} from '@devvit/web/server'
 import type {FfbotConfig, ThreadConfig} from '../shared/types.ts'
 import {
-  emptyAccumulator,
-  fillRowCounts,
-  mergeCounts,
-  walkThread,
-} from './comments.ts'
-import {NO_WIKI_FOUND, getWiki, loadConfig} from './config.ts'
+  clearRemoved,
+  markRemoved,
+  readThreadState,
+  recordComment,
+  trackPost,
+} from './comment-store.ts'
+import {fillRowCounts, mergeCounts, walkThread} from './comments.ts'
+import {getWiki, loadConfig, NO_WIKI_FOUND} from './config.ts'
 import {
   daysSinceMonday,
   squashWhitespace,
@@ -27,14 +29,18 @@ import {
   threadZone,
 } from './dates.ts'
 import {
+  loadRun,
+  nextReconcileCursor,
   type RunState,
   type RunThread,
-  loadAccumulator,
-  loadRun,
-  saveAccumulator,
   saveRun,
 } from './state.ts'
-import {leaderTable, overallLeaderTable, unansweredTable} from './tables.ts'
+import {
+  composeThreadBody,
+  overallLeaderTable,
+  unansweredTable,
+} from './tables.ts'
+import {resolvePostsPerDay, selectThreads} from './threads.ts'
 
 /** Stop working at this point and hand off to the next job. */
 const BUDGET_MS = 20_000
@@ -99,7 +105,9 @@ async function currentBotPosts(
  *
  * Templates are fetched once per subreddit per warm process.
  */
-let flairCache: {sub: string; templates: {id: string; text: string}[]} | undefined
+let flairCache:
+  | {sub: string; templates: {id: string; text: string}[]}
+  | undefined
 
 async function flairIdForText(
   sub: string,
@@ -116,7 +124,9 @@ async function flairIdForText(
         `Flair templates on r/${sub}: ${flairCache.templates.map(t => `"${t.text}"`).join(', ') || '(none)'}`,
       )
     } catch (err) {
-      console.warn(`WARN: could not read flair templates for r/${sub}: ${String(err)}`)
+      console.warn(
+        `WARN: could not read flair templates for r/${sub}: ${String(err)}`,
+      )
       flairCache = {sub, templates: []}
     }
   }
@@ -149,17 +159,14 @@ export async function runCycle(): Promise<void> {
 
   const td = threadDate(new Date(), opts.timezone, opts.rolloverHour)
   const zone = threadZone(
-    config.posts_per_day ?? opts.postsPerDay,
+    resolvePostsPerDay(config, opts.postsPerDay),
     td.hour,
   ).trim()
 
   const existing = await currentBotPosts(sub, 1000)
   const byTitle = new Map(existing.map(p => [p.title, p]))
 
-  const enabled = config.threads
-    .filter(t => t.enabled !== false)
-    .filter(t => !t.day || t.day === td.dayFull)
-    .sort((a, b) => (a.title < b.title ? -1 : a.title > b.title ? 1 : 0))
+  const enabled = selectThreads(config.threads, td.dayFull)
 
   const threads: RunThread[] = []
   for (const cfg of enabled) {
@@ -208,6 +215,14 @@ export async function runCycle(): Promise<void> {
     threads.push({postId: post.id, body, config: cfg})
   }
 
+  // The comment trigger fires for the whole subreddit; this is what tells it
+  // which posts to count. Register BEFORE saving the run so no comment posted
+  // between submit and save is missed.
+  for (const t of threads) await trackPost(t.postId)
+
+  const reconcileIndex =
+    threads.length > 0 ? (await nextReconcileCursor()) % threads.length : 0
+
   const run: RunState = {
     runId: `${td.date.replaceAll('/', '')}-${zone || 'all'}-${Date.now()}`,
     date: td.date,
@@ -215,6 +230,7 @@ export async function runCycle(): Promise<void> {
     zone,
     threads,
     cursor: 0,
+    reconcileIndex,
     helpCountAll: {},
   }
   await saveRun(run)
@@ -243,79 +259,120 @@ export async function processThread(data: {
     return
   }
 
-  // Process as many threads as fit in this invocation. Each chained job may
-  // cost up to a minute of scheduler granularity, so one-job-per-thread makes
-  // a cycle take longer than the cron interval once a subreddit has a dozen
-  // daily threads, and cycles begin to overlap.
   const deadline = Date.now() + BUDGET_MS
   let phase = data.phase
   let cursor = data.cursor
   let skip = data.skip
 
+  // RECONCILE PHASE: exactly ONE thread per cycle, rotating.
+  //
+  // The counters are kept current by the comment trigger, so this pass only
+  // repairs drift (missed events, mod removals, downtime). Repairing every
+  // thread every cycle would re-incur the full rate-limited walk cost that the
+  // trigger design exists to avoid — measured at up to 20s for a single
+  // 541-comment thread. Rotating means every thread is repaired every N cycles
+  // instead, for a flat ~20s of API time per cycle no matter how many threads
+  // there are.
+  if (phase === 'walk') {
+    const target = run.threads[run.reconcileIndex]
+    if (target) {
+      const result = await reconcileOne(target, deadline, skip)
+      if (result.hitBudget) {
+        await chain('walk', cursor, result.nextSkip)
+        return
+      }
+    }
+    phase = 'render'
+    cursor = 0
+    skip = 0
+    run.cursor = 0
+
+    // "# Helped in all threads" spans the whole run, so it is summed from every
+    // thread's store once repairs are done. Redis only; no API calls.
+    run.helpCountAll = {}
+    for (const t of run.threads) {
+      const acc = await readThreadState(t.postId)
+      mergeCounts(run.helpCountAll, acc.allCount)
+    }
+    await saveRun(run)
+  }
+
+  // RENDER PHASE: every thread, every cycle. One Redis read and one edit each,
+  // so this stays cheap however big the threads get.
   for (;;) {
     const thread = run.threads[cursor]
-
     if (!thread) {
-      if (phase === 'walk') {
-        phase = 'render'
-        cursor = 0
-        skip = 0
-        run.cursor = 0
-        await saveRun(run)
-        continue
-      }
       console.log('All threads rendered; building index')
       await scheduler.runJob({name: JOB_INDEX, runAt: new Date()})
       return
     }
 
     if (Date.now() > deadline) {
-      console.log(`Budget spent; continuing at ${phase} cursor ${cursor}`)
-      await chain(phase, cursor, skip)
+      console.log(`Budget spent; continuing at render cursor ${cursor}`)
+      await chain('render', cursor, 0)
       return
     }
 
-    if (phase === 'walk') {
-      const partial = await walkOne(run, thread, deadline, skip)
-      if (partial.hitBudget) {
-        await chain('walk', cursor, partial.nextSkip)
-        return
-      }
-      skip = 0
-    } else {
-      await renderOne(run, thread)
-    }
-
+    await renderOne(run, thread)
     cursor++
     run.cursor = cursor
     await saveRun(run)
   }
 }
 
-async function walkOne(
-  run: RunState,
+/**
+ * Reconciliation, NOT the main counting path.
+ *
+ * The counters are maintained by the onCommentCreate trigger. This exists to
+ * repair the three ways triggers drift:
+ *
+ *   - comments posted while the app was down, or before it was installed
+ *   - a comment removed by a mod after the fact (no create event fires)
+ *   - a trigger Devvit simply did not deliver
+ *
+ * It re-reads the thread and folds anything missing into the SAME counters.
+ * `recordComment` is idempotent, so re-reading a comment already counted is a
+ * no-op rather than a double count — which is what makes it safe to run this
+ * as often as the budget allows.
+ *
+ * It is bounded by `deadline` like the old walk was, but running out of time is
+ * now harmless: it just means less repair this cycle, not missing numbers.
+ */
+async function reconcileOne(
   thread: RunThread,
   deadline: number,
   skip: number,
 ): Promise<{hitBudget: boolean; nextSkip: number}> {
   const walked = await walkThread(thread.postId, deadline, skip)
 
-  const acc =
-    (await loadAccumulator(run.runId, thread.postId)) ??
-    emptyAccumulator(thread.postId)
-  mergeCounts(acc.helpCount, walked.substantive)
-  acc.unanswered.push(...walked.unanswered)
-  acc.topLevelSeen += walked.topLevelSeen
-  acc.partial = walked.partial
-  await saveAccumulator(run.runId, acc)
+  let repaired = 0
+  for (const c of walked.comments) {
+    const kind = await recordComment({
+      commentId: c.commentId,
+      postId: thread.postId,
+      parentId: c.parentId,
+      author: c.authorName,
+      body: c.body,
+      permalink: c.permalink,
+      createdAtMs: c.createdAtMs,
+      removed: c.removed,
+    })
+    if (kind !== 'duplicate') repaired++
+    // A mod removal never fires a create event, so it can only be seen here.
+    if (c.isTopLevel) {
+      if (c.removed) await markRemoved(thread.postId, c.commentId)
+      else await clearRemoved(thread.postId, c.commentId)
+    }
+  }
 
-  mergeCounts(run.helpCountAll, walked.allReplies)
-  await saveRun(run)
+  if (repaired > 0) {
+    console.log(`RECONCILE ${thread.postId} repaired ${repaired} comments`)
+  }
 
   if (walked.partial) {
     const nextSkip = skip + walked.topLevelSeen
     console.log(
-      `Thread ${thread.postId} hit the time budget after ${nextSkip} comments; continuing`,
+      `Reconcile of ${thread.postId} paused at ${nextSkip}; resuming next job`,
     )
     return {hitBudget: true, nextSkip}
   }
@@ -324,19 +381,8 @@ async function walkOne(
 
 async function renderOne(run: RunState, thread: RunThread): Promise<void> {
   if (thread.config.no_table) return
-  const acc = await loadAccumulator(run.runId, thread.postId)
-  if (!acc) return
-
-  const rows = fillRowCounts(acc.unanswered, acc.helpCount, run.helpCountAll)
-  let body = thread.body
-  body += leaderTable(acc.helpCount)
-  body += unansweredTable({
-    rows,
-    topLevelCount: acc.topLevelSeen,
-    length: 40,
-    text: true,
-    showPercents: false,
-  })
+  const acc = await readThreadState(thread.postId)
+  const body = composeThreadBody(thread.body, acc, run.helpCountAll)
   console.log(`EDITING THREAD ${thread.postId}`)
   const post = await reddit.getPostById(thread.postId as `t3_${string}`)
   await post.edit({text: body})
@@ -369,15 +415,19 @@ export async function buildIndex(): Promise<void> {
     }
     body += overallLeaderTable(run.helpCountAll)
     for (const thread of run.threads) {
-      const acc = await loadAccumulator(run.runId, thread.postId)
-      if (!acc) continue
-      const rows = fillRowCounts(acc.unanswered, acc.helpCount, run.helpCountAll)
+      const acc = await readThreadState(thread.postId)
+      const rows = fillRowCounts(
+        acc.unanswered,
+        acc.helpCount,
+        run.helpCountAll,
+      )
       const post = await reddit.getPostById(thread.postId as `t3_${string}`)
       body += '\n --- \n\n'
       body += `#[${post.title}](${post.permalink})`
       body += unansweredTable({
         rows,
         topLevelCount: acc.topLevelSeen,
+        unansweredTotal: acc.unansweredTotal,
         length: rowLimit,
         text: false,
         showPercents: config.show_percents,

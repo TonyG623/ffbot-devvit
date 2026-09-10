@@ -65,8 +65,14 @@ test('port reproduces the live bot Index title', () => {
 
 test('titles containing brackets, slashes and commas survive unchanged', () => {
   // These are the awkward ones: a "?" title, a "/" title, and a comma-heavy one.
-  assert.equal(generate('Who Do I Draft?'), 'Official: [Who Do I Draft?] - Tue 09/08/2026')
-  assert.equal(generate('WDIS K/TE/DEF'), 'Official: [WDIS K/TE/DEF] - Tue 09/08/2026')
+  assert.equal(
+    generate('Who Do I Draft?'),
+    'Official: [Who Do I Draft?] - Tue 09/08/2026',
+  )
+  assert.equal(
+    generate('WDIS K/TE/DEF'),
+    'Official: [WDIS K/TE/DEF] - Tue 09/08/2026',
+  )
   assert.equal(
     generate('Dynasty, Best Ball, and Guillotine Strategy'),
     'Official: [Dynasty, Best Ball, and Guillotine Strategy] - Tue 09/08/2026',

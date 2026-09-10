@@ -39,23 +39,80 @@ Otherwise wait up to 15 minutes for the cron.
 
 ## Architecture, and the one decision that drove it
 
-Devvit jobs have a **30 second execution limit**. The Python ran as one long
-process: load config, post threads, walk every comment of every thread, edit
-everything, `time.sleep(10)` between edits. That cannot survive the ceiling.
+Devvit jobs have a **30 second execution limit**, and the Devvit Reddit API is
+rate limited to roughly **4 requests per second**. The second constraint turned
+out to matter far more than the first.
 
-So a cycle is split into phases that re-enter through Devvit's scheduler, with
-state in Redis instead of memory:
+The port originally walked every comment of every thread each cycle. That was
+measured against live r/fantasyfootball threads and **it does not survive the
+season** — a 541-comment thread took 19.6s of a 20s budget, and the next one up
+timed out. See "Still to test" item 1 for the full numbers.
+
+So the counting is now **incremental, driven by the comment trigger**:
 
 ```
+onCommentCreate  ->  fold one comment into Redis counters   (0 Reddit API calls)
+
 cycle (cron */15)   ensure today's threads exist  -> chain
-  walk    read comments into a Redis accumulator
-  render  edit each thread body from the accumulator
-  index   build and post the stickied Index thread
+  reconcile   repair ONE thread per cycle, rotating (bounded, ~20s of API)
+  render      edit every thread body FROM REDIS    (1 edit each, no walking)
+  index       build and post the stickied Index thread
 ```
+
+The trigger payload already carries author, body, `parentId` and permalink, so
+maintaining the counters costs no Reddit API calls at all. Cost is O(new
+comments) instead of O(all comments) every fifteen minutes, which is flat as
+threads grow into the thousands.
+
+Key files:
+
+| file | role |
+|---|---|
+| `comment-counting.ts` | the counting rules; takes a Redis handle explicitly so it is unit testable |
+| `comment-store.ts` | thin binding of those rules to the real Devvit client; holds no logic |
+| `trigger-payload.ts` | parses the trigger body; the wire shape is INFERRED, see below |
+| `triggers.ts` | the hot path, once per comment in the subreddit |
+| `comments.ts` | `walkThread`, now only the reconciliation reader |
+
+**Every counter write is a single atomic Redis field op** (`hSetNX`/`hIncrBy`).
+Comment triggers fire concurrently, and read-modify-write on a shared JSON blob
+would lose updates under exactly the load a busy thread produces.
+
+`recordComment` is **idempotent** — it claims each comment id via `hSetNX`
+before counting. That is what makes redelivered triggers safe, and what lets the
+reconciliation walk re-read comments already counted without double counting.
+
+### Reconciliation, and why it is rotated
+
+Triggers drift three ways: comments posted while the app was down, mod removals
+(no create event fires), and events Devvit simply does not deliver. So a
+bounded walk repairs **one thread per cycle, rotating** via a Redis counter.
+Reconciling every thread every cycle would re-incur the exact rate-limited cost
+the trigger design exists to avoid. Rotating gives a flat ~20s of API time per
+cycle regardless of thread count; each thread gets repaired every N cycles.
 
 Config lives on the subreddit wiki at `r/<sub>/wiki/ffbot` (YAML in a 4-space
 indented block), with per-thread body pages at `r/<sub>/wiki/ffbot/<name>`.
 Config is re-read every cycle, so wiki edits take effect with no redeploy.
+
+## THE ONE UNVERIFIED ASSUMPTION
+
+`@devvit/web` does not export a type for what Devvit POSTs to a trigger
+endpoint. `trigger-payload.ts` is written against the protobuf definitions
+(`CommentCreate` wrapping `CommentV2`) — so the wire shape is **inferred, not
+contracted**. The parser is deliberately permissive and returns undefined
+rather than throwing.
+
+`triggers.ts` logs the first payload of each process in full:
+
+```
+TRIGGER first payload sample: {...}
+TRIGGER parsed as: {...}
+```
+
+**Read that log line before trusting any published number.** If `parsed as`
+shows empty/missing fields, fix `trigger-payload.ts` against what the sample
+actually contains. This is the single highest-risk thing in the port.
 
 ## Verified live on r/ffbottest
 
@@ -78,24 +135,144 @@ comments captured from a live r/fantasyfootball thread (`counting.test.ts`).
 
 ## Still to test
 
-1. **Walk timing at volume.** THE open question. r/ffbottest threads are nearly
-   empty, so the walk finishes instantly and proves nothing. r/fantasyfootball
-   daily threads run 100-150 comments across a dozen threads. If a walk cannot
-   finish inside its 20 second budget, it chains with a skip offset and re-reads
-   the skipped pages, which is quadratic. If that happens routinely, the fix is
-   NOT a bigger budget: maintain counters incrementally from an
-   `onCommentCreate` trigger so the cron only renders what Redis already knows.
-   The trigger endpoint is declared and stubbed at
-   `/internal/triggers/comment-create` for exactly this.
-2. Day restricted threads (`day: monday` etc) post only on their named weekday.
-3. `posts_per_day: 2` or `3` produces Morning/Afternoon/Evening in titles.
-4. Wiki config breakage: put a stray `:` in the YAML, confirm modmail
-   "FFBot wiki config broken - using cached version", confirm it keeps posting
-   from cache, fix it, confirm the "restored" modmail. Exactly one modmail per
-   state change, not one per run. Ported but never exercised.
-5. Missing wiki body page yields `No Wiki Found` rather than throwing.
-6. Comment counting edge cases: replies of exactly 20 and 21 characters,
-   removed comments, deleted authors.
+1. **Walk timing at volume. ANSWERED 2026-09-10, and the answer is: the
+   full-walk design does NOT survive the season.** Measured read-only against
+   live r/fantasyfootball threads (`src/server/bench.ts`, delete before ship).
+
+   September dailies are fine. Everything above ~500 comments is not:
+
+   | Thread | Reddit count | top-level | reply fetches | elapsed | finished |
+   |---|---|---|---|---|---|
+   | WDIS Flex | 276 | 121 | 35 | 10.3s | yes |
+   | Trade | 195 | 68 | 47 | 12.5s | yes |
+   | Add/Drop | 162 | 62 | 32 | 8.6s | yes |
+   | WDIS WR | 148 | 62 | 27 | 7.3s | yes |
+   | Rate My Team | 541 | 191 | 72 | **19.6s** | barely |
+   | Rate My Team #2 | 524 | 131 of ~190 | - | **20.1s** | **NO** |
+
+   ### The binding constraint is a RATE LIMIT, not CPU or the job ceiling
+
+   The Devvit Reddit API caps out around **4 requests per second**. Serial walk:
+   72 reply fetches in 17.7s = 4.07/s, each fetch ~246ms. That ~250ms is the
+   limiter pacing us, not network latency.
+
+   **Concurrency makes it strictly worse. Do not try it.** An 8-way parallel
+   variant was measured and REFUTED:
+
+   - `Error: 8 RESOURCE_EXHAUSTED ... 429 Too Many Requests`
+   - per-fetch latency got WORSE, 246ms -> 343ms
+   - throughput dropped, 4.07/s -> 2.9/s
+   - it read 112 top-level in 20s where the serial walk read 191
+   - and the counts came out WRONG, because failed fetches returned `[]`
+
+   **`depth: 2` was also measured and REFUTED** (identical timings, 1.0x).
+   Reddit truncates replies into `more` stubs at the same rate regardless of
+   depth, so the same fetches still happen. Do not re-litigate either of these.
+
+   ### The cost model
+
+   - top-level comments are consistently **35-44%** of Reddit's comment count
+   - about **38%** of top-level comments need a reply round trip
+   - so: **walk seconds = top-level count / 10**, and that is irreducible
+
+   Which means a 2000-comment thread is ~700 top-level = **~70 seconds**, four
+   chained jobs for ONE thread. A dozen threads on a December Sunday is minutes
+   of pure rate-limited API time against a 15 minute cron. Cycles overlap and
+   the bot falls behind permanently.
+
+   Note the Python has the same wall and gave up at it: `post_daily_threads.py`
+   line 407 guards `replace_more` with `if thread.num_comments < 2000`, so on
+   the biggest days the ORIGINAL bot silently builds its tables from an
+   unexpanded comment forest. This is not a regression in the port. It is a
+   chance for the port to be better.
+
+   ### The fix: incremental counters from triggers (NOT YET BUILT)
+
+   Stop walking. Maintain per-comment state in Redis from `onCommentCreate`, so
+   a cycle renders what Redis already knows. **This costs zero Reddit API calls**,
+   because the trigger payload already carries everything the counting rules
+   need. `CommentV2` (`@devvit/protos/types/devvit/reddit/v2alpha/commentv2.d.ts`):
+
+   | field | used for |
+   |---|---|
+   | `parentId` | `t3_` = top-level, `t1_` = reply. The whole tree shape. |
+   | `body` | the >20 character substantive test |
+   | `author` | both leaderboards |
+   | `permalink`, `createdAt` | the unanswered table's link and sort |
+   | `deleted` | the `[deleted]` guard |
+
+   That turns an O(all comments) re-walk every 15 minutes into O(new comments),
+   and it is flat as threads grow. Rendering then costs one edit per thread,
+   about a dozen API calls per cycle, which is nothing.
+
+   Triggers alone drift, so it needs three companions:
+
+   - `onCommentUpdate` carries `previousBody`, so an edit crossing the 20
+     character boundary can be applied as a delta.
+   - `onCommentDelete` / removals never fire a create event, and the unanswered
+     table depends on `removed`.
+   - Anything missed during downtime or before install is invisible forever, so
+     keep a BOUNDED reconciliation walk: newest N comments each cycle, or one
+     full walk daily at a quiet hour. The existing `walkThread` becomes that
+     repair path rather than the main path.
+
+   The trigger endpoint is already declared and stubbed at
+   `/internal/triggers/comment-create`.
+
+2. ~~Day restricted threads~~ **DONE.** `selectThreads`/`postsOnDay` extracted
+   to `threads.ts`, covered by `threads.test.ts`. Found: a wiki entry written
+   `day: "Monday"` matched NOTHING in the Python (it compares against a
+   lowercased `%A`) so that thread silently never posted. Now case-insensitive.
+3. ~~`posts_per_day` zones~~ **DONE.** Covered by `threads.test.ts`. Found: the
+   `postsPerDay` SUBREDDIT SETTING was dead code - `DEFAULT_CONFIG` always
+   supplied `posts_per_day: 1`, so `config.posts_per_day ?? setting` never fell
+   through. The dropdown did nothing. Default removed; wiki still wins when set.
+4. ~~Wiki config breakage modmail~~ **DONE offline.** The state machine is
+   extracted to `config-status.ts` and covered by `config-status.test.ts`,
+   including the requirement that matters: 16 consecutive broken cycles send
+   exactly ONE modmail, and a break-then-fix cycle sends exactly two. Still
+   worth one live confirmation that modmail delivery itself works.
+5. Missing wiki body page yields `No Wiki Found` rather than throwing. Safe by
+   construction - `getWiki` catches everything and returns `undefined`, and the
+   caller does `?? NO_WIKI_FOUND` - but not yet confirmed live.
+6. ~~Comment counting edge cases~~ **DONE 2026-09-10.** Covered by
+   `src/server/edge-cases.test.ts` (10 tests): the 20/21 character boundary,
+   removed comments, and deleted authors. Two real bugs found and fixed while
+   writing them - see "Bugs found" below.
+
+## Bugs found and fixed 2026-09-10
+
+- **The thread leaderboard published the wrong numbers.** `renderOne` passed the
+  LENGTH-FILTERED counter to `leaderTable`, but the Python's
+  `calculate_leader_index` counts every reply with no length test. So the port
+  under-counted anyone who had written a short reply - on the captured fixture,
+  12 instead of 13. This is the "two reply counters" gotcha below, at a call
+  site the gotcha did not name. There are really THREE counters:
+
+  | counter | filter | scope | feeds |
+  |---|---|---|---|
+  | `acc.allCount` | none | this thread | thread leaderboard |
+  | `acc.helpCount` | >20 chars | this thread | "# Helped in thread" COLUMN |
+  | `run.helpCountAll` | none | all threads | "# Helped in all threads" |
+
+  Both tables are headed "# Helped in thread" and they are different numbers.
+  `composeThreadBody` in `tables.ts` is now a pure function precisely so this
+  wiring is unit tested; the test fails if the counters are swapped back.
+
+- **`[deleted]` was being counted as a user.** PRAW gave the Python `None` for a
+  deleted author, which made `author.name` raise inside a bare `except: pass`,
+  so deleted authors silently dropped out. Devvit returns the literal string
+  `"[deleted]"`, which is TRUTHY - so it was accumulating onto the leaderboards
+  and could take a row on the unanswered table. Now guarded by `isRealAuthor`.
+  Note the two deliberate asymmetries, both matching the Python:
+  a long reply from a deleted author still ANSWERS a comment (the length test
+  never touched `.author`), and a deleted-author comment still counts toward
+  "% helped" while getting no row (`unansweredTotal` vs `rows.length`).
+
+- **`npm run lint` had never passed.** There was no `biome.json`, so biome was
+  checking a spaces/no-semicolon codebase against its tabs/semicolons defaults.
+  `npm test` did not run lint, so nobody noticed. Added a config matching the
+  actual style; lint is now clean and part of `npm test`.
 
 ## Gotchas already hit, do not rediscover these
 

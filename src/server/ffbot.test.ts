@@ -16,16 +16,25 @@ import {
 import {extractYaml} from './yaml-extract.ts'
 
 test('extractYaml: fenced block returns content between first and last fence', () => {
-  const input = ['intro text', '```', 'threads:', '  - title: A', '```', 'outro'].join(
-    '\n',
-  )
+  const input = [
+    'intro text',
+    '```',
+    'threads:',
+    '  - title: A',
+    '```',
+    'outro',
+  ].join('\n')
   assert.equal(extractYaml(input), 'threads:\n  - title: A')
 })
 
 test('extractYaml: indented block strips exactly four spaces', () => {
-  const input = ['Some prose', '', '    threads:', '    - title: A', 'trailing'].join(
-    '\n',
-  )
+  const input = [
+    'Some prose',
+    '',
+    '    threads:',
+    '    - title: A',
+    'trailing',
+  ].join('\n')
   assert.equal(extractYaml(input), 'threads:\n- title: A')
 })
 

@@ -19,7 +19,10 @@ import {leaderTable, unansweredTable} from './tables.ts'
 type FixtureRow = [string, number, number, string, [string, number][]]
 
 const fixture = JSON.parse(
-  readFileSync(new URL('./fixtures/ff-trade-2026-09-08.json', import.meta.url), 'utf8'),
+  readFileSync(
+    new URL('./fixtures/ff-trade-2026-09-08.json', import.meta.url),
+    'utf8',
+  ),
 ) as {comments: FixtureRow[]}
 
 const comments: RawComment[] = fixture.comments.map(c => ({
@@ -89,7 +92,10 @@ test('rendered tables match what the real thread would publish', () => {
   })
   // Sorted by helpedHere desc, so the busiest helper's own unanswered comment
   // leads, showing 12 (substantive) and 13 (all) in the two columns.
-  assert.match(table, /\nheadfullofmangos \| 12 \| 13 \| \[Comment\]\(\/c\/p8k8lu7\)/)
+  assert.match(
+    table,
+    /\nheadfullofmangos \| 12 \| 13 \| \[Comment\]\(\/c\/p8k8lu7\)/,
+  )
   // 18 unanswered of 30 top-level comments -> 40% helped.
   assert.match(table, /\*\*40% of users have been helped in this thread\*\*/)
   assert.match(table, /\n\*\*and 12 others\.\*\*\| \| /)

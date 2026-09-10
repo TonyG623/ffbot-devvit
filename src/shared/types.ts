@@ -24,7 +24,11 @@ export type FfbotConfig = {
   subreddit: string
   index: boolean
   news_and_discussion: boolean
-  posts_per_day: number
+  /**
+   * Optional ON PURPOSE. When the wiki omits it the subreddit setting applies;
+   * defaulting it here would shadow the setting and make it dead config.
+   */
+  posts_per_day?: number
   show_percents: boolean
   wdis_replace: boolean
 }
@@ -44,12 +48,23 @@ export type UnansweredRow = {
 /** Per-thread accumulator persisted in Redis between chained job runs. */
 export type ThreadAccumulator = {
   postId: string
-  /** username -> number of substantive replies written in this thread. */
+  /**
+   * username -> LENGTH-FILTERED replies written in this thread. Feeds the
+   * "# Helped in thread" COLUMN of the unanswered table.
+   */
   helpCount: Record<string, number>
+  /**
+   * username -> UNFILTERED replies written in this thread. Feeds the per-thread
+   * leaderboard, which the Python builds without any length test. Keeping this
+   * separate from helpCount is not redundancy: on real data the two differ.
+   */
+  allCount: Record<string, number>
   /** Top-level comments with fewer than the reply threshold. */
   unanswered: UnansweredRow[]
-  /** Total top-level comments seen, for the "% helped" figure. */
+  /** Total top-level comments seen, the denominator of the "% helped" figure. */
   topLevelSeen: number
+  /** Unanswered count INCLUDING deleted authors, the numerator of "% helped". */
+  unansweredTotal: number
   /** True when a run hit its time budget before finishing the listing. */
   partial: boolean
 }
@@ -57,7 +72,7 @@ export type ThreadAccumulator = {
 export const DEFAULT_CONFIG: Omit<FfbotConfig, 'threads' | 'subreddit'> = {
   index: true,
   news_and_discussion: false,
-  posts_per_day: 1,
+  // posts_per_day is deliberately absent: see the field's comment above.
   show_percents: false,
   wdis_replace: true,
 }

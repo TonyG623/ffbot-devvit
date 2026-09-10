@@ -11,7 +11,7 @@
     "format": "npm run lint -- --fix",
     "lint": "biome check --error-on-warnings",
     "playtest": "devvit playtest",
-    "test": "npm run test:types && npm run test:unit && npm run build",
+    "test": "npm run lint && npm run test:types && npm run test:unit && npm run build",
     "test:types": "tsc --build",
     "test:unit": "node --experimental-strip-types --no-warnings=ExperimentalWarning --test src/**/*.test.ts",
     "publish": "npm run clean && npm run build && devvit publish",

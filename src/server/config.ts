@@ -10,6 +10,11 @@ import {context, reddit} from '@devvit/web/server'
 import {parse as parseYaml} from 'yaml'
 import {DEFAULT_CONFIG, type FfbotConfig} from '../shared/types.ts'
 import {
+  type ConfigAlert,
+  type ConfigOutcome,
+  decideConfigAction,
+} from './config-status.ts'
+import {
   cacheConfig,
   getConfigStatus,
   loadCachedConfig,
@@ -55,6 +60,59 @@ export async function getWiki(
 /** Body used when a thread's wiki page is missing — matches the Python. */
 export const NO_WIKI_FOUND = 'No Wiki Found'
 
+/** Render the modmail for an alert. Kept next to the state machine it serves. */
+function alertBody(
+  alert: ConfigAlert,
+  subredditName: string,
+  detail: string,
+): {subject: string; body: string} {
+  const wikiUrl = `https://www.reddit.com/r/${subredditName}/wiki/${WIKI_CONFIG_PAGE}`
+  // Four leading spaces render `detail` as a markdown code block in modmail.
+  const quoted = `\n\n    ${detail}\n\n`
+  switch (alert) {
+    case 'restored':
+      return {
+        subject: 'FFBot wiki config restored',
+        body: 'The ffbot wiki page is parsing correctly again. The bot is back on the live config.',
+      }
+    case 'broken-cached':
+      return {
+        subject: 'FFBot wiki config broken - using cached version',
+        body:
+          `The ffbot wiki page at ${wikiUrl} could not be loaded:${quoted}` +
+          'The bot is using the last-known-good wiki config. Posting will continue with ' +
+          'the previous settings. Fix the wiki - you will get another modmail when the ' +
+          'bot picks up the fix.',
+      }
+    case 'broken-no-cache':
+      return {
+        subject: 'FFBot wiki config broken - cannot post',
+        body:
+          `The ffbot wiki page at ${wikiUrl} could not be loaded and there is ` +
+          `no cached config to fall back on:${quoted}` +
+          'The bot will not post until the wiki is fixed.',
+      }
+  }
+}
+
+/**
+ * Run one step of the config-health state machine: alert only on a transition,
+ * then record the new status.
+ */
+async function applyConfigAction(
+  previous: Awaited<ReturnType<typeof getConfigStatus>>,
+  outcome: ConfigOutcome,
+  subredditName: string,
+  detail: string,
+): Promise<void> {
+  const {alert, nextStatus} = decideConfigAction(previous, outcome)
+  if (alert) {
+    const {subject, body} = alertBody(alert, subredditName, detail)
+    await sendModAlert(subject, body)
+  }
+  await setConfigStatus(nextStatus)
+}
+
 export type LoadConfigResult =
   | {ok: true; config: FfbotConfig; source: 'wiki' | 'cache'}
   | {ok: false}
@@ -71,7 +129,8 @@ export async function loadConfig(
 
   try {
     const raw = await getWiki(subredditName, WIKI_CONFIG_PAGE)
-    if (raw === undefined) throw new Error(`wiki page ${WIKI_CONFIG_PAGE} not found`)
+    if (raw === undefined)
+      throw new Error(`wiki page ${WIKI_CONFIG_PAGE} not found`)
 
     const parsed = parseYaml(extractYaml(raw)) as unknown
     if (
@@ -91,47 +150,31 @@ export async function loadConfig(
     }
 
     await cacheConfig(config)
-    if (status === 'failed') {
-      await sendModAlert(
-        'FFBot wiki config restored',
-        'The ffbot wiki page is parsing correctly again. The bot is back on the live config.',
-      )
-    }
-    await setConfigStatus('ok')
-    console.log(`Loaded config from r/${subredditName}/wiki/${WIKI_CONFIG_PAGE}`)
+    await applyConfigAction(status, 'parsed', subredditName, '')
+    console.log(
+      `Loaded config from r/${subredditName}/wiki/${WIKI_CONFIG_PAGE}`,
+    )
     return {ok: true, config, source: 'wiki'}
   } catch (err) {
-    const detail = err instanceof Error ? `${err.name}: ${err.message}` : String(err)
+    const detail =
+      err instanceof Error ? `${err.name}: ${err.message}` : String(err)
     console.warn(`WARN: wiki config load failed (${detail})`)
 
     const cached = await loadCachedConfig()
-    const wikiUrl = `https://www.reddit.com/r/${subredditName}/wiki/${WIKI_CONFIG_PAGE}`
 
     if (cached) {
       cached.subreddit = subredditName
-      if (status !== 'failed') {
-        await sendModAlert(
-          'FFBot wiki config broken - using cached version',
-          `The ffbot wiki page at ${wikiUrl} could not be loaded:\n\n    ${detail}\n\n` +
-            'The bot is using the last-known-good wiki config. Posting will continue with ' +
-            'the previous settings. Fix the wiki - you will get another modmail when the ' +
-            'bot picks up the fix.',
-        )
-        await setConfigStatus('failed')
-      }
+      await applyConfigAction(
+        status,
+        'failed-with-cache',
+        subredditName,
+        detail,
+      )
       console.log('Using cached wiki config')
       return {ok: true, config: cached, source: 'cache'}
     }
 
-    if (status !== 'failed') {
-      await sendModAlert(
-        'FFBot wiki config broken - cannot post',
-        `The ffbot wiki page at ${wikiUrl} could not be loaded and there is no cached ` +
-          `config to fall back on:\n\n    ${detail}\n\n` +
-          'The bot will not post until the wiki is fixed.',
-      )
-      await setConfigStatus('failed')
-    }
+    await applyConfigAction(status, 'failed-no-cache', subredditName, detail)
     console.log('No cached config available - exiting without posting')
     return {ok: false}
   }
