@@ -377,7 +377,7 @@ async function reconcileOne(
 ): Promise<{hitBudget: boolean; nextSkip: number}> {
   const walked = await walkThread(thread.postId, deadline, skip)
 
-  let repaired = 0
+  const tally: Record<string, number> = {}
   for (const c of walked.comments) {
     const kind = await recordComment({
       commentId: c.commentId,
@@ -389,7 +389,7 @@ async function reconcileOne(
       createdAtMs: c.createdAtMs,
       removed: c.removed,
     })
-    if (kind !== 'duplicate') repaired++
+    tally[kind] = (tally[kind] ?? 0) + 1
     // A mod removal never fires a create event, so it can only be seen here.
     if (c.isTopLevel) {
       if (c.removed) await markRemoved(thread.postId, c.commentId)
@@ -398,8 +398,10 @@ async function reconcileOne(
   }
 
   console.log(
-    `RECONCILE ${thread.postId} read ${walked.comments.length} comments ` +
-      `(${walked.topLevelSeen} top-level), folded ${repaired} new` +
+    `RECONCILE ${thread.postId} read ${walked.comments.length} comments: ` +
+      `${tally['top-level'] ?? 0} top-level, ${tally['direct-reply'] ?? 0} replies, ` +
+      `${tally['deeper-reply'] ?? 0} deeper (ignored), ` +
+      `${tally.duplicate ?? 0} already counted` +
       (walked.partial ? ', PARTIAL' : ''),
   )
 
@@ -426,7 +428,13 @@ async function renderOne(run: RunState, thread: RunThread): Promise<void> {
   }
   const acc = await readThreadState(thread.postId)
   const body = composeThreadBody(thread.body, acc, run.helpCountAll)
-  console.log(`EDITING THREAD ${thread.postId}`)
+  const topLeader = Object.entries(acc.allCount).sort((a, b) => b[1] - a[1])[0]
+  console.log(
+    `EDITING THREAD ${thread.postId}: ${acc.topLevelSeen} top-level, ` +
+      `${acc.unanswered.length} unanswered rows (${acc.unansweredTotal} counted), ` +
+      `top helper ${topLeader ? `${topLeader[0]}=${topLeader[1]}` : 'none'}, ` +
+      `body ${body.length} chars`,
+  )
   const post = await reddit.getPostById(thread.postId as `t3_${string}`)
   await post.edit({text: body})
 }
