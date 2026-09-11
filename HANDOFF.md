@@ -107,30 +107,52 @@ Config lives on the subreddit wiki at `r/<sub>/wiki/ffbot` (YAML in a 4-space
 indented block), with per-thread body pages at `r/<sub>/wiki/ffbot/<name>`.
 Config is re-read every cycle, so wiki edits take effect with no redeploy.
 
-## Trigger payload: VERIFIED 2026-09-10
+## Trigger payloads: CONTRACTED, and mostly verified
 
-`@devvit/web` exports no type for a trigger POST body, so `trigger-payload.ts`
-was written against the protobufs and the wire shape was inferred. It has now
-been confirmed against a real delivered event on r/ffbottest. Every field the
-counting rules need parses correctly.
+**Correction to an earlier claim in this file.** It said `@devvit/web` exports
+no type for a trigger body and that the shapes were inferred from protobufs.
+That was wrong. `@devvit/web/shared` re-exports `OnCommentCreateRequest`,
+`OnCommentDeleteRequest` and `OnPostDeleteRequest` from
+`@devvit/shared/types/triggers.d.ts`. They are named `On*Request`, not after the
+proto messages, which is why searching for the message names found nothing.
+`trigger-payload.ts` now uses them, so the shapes are contracted rather than
+guessed. They are still TypeScript types over unvalidated JSON, so fields are
+read defensively.
 
-Two things that came out of that verification, both load-bearing:
+### onCommentCreate: VERIFIED live
 
-- **`comment.author` is a USER ID, not a username.** The live payload carried
-  `"author":"t2_2mjbzpp4by"`. The correct name is on the SIBLING `author`
-  object as `.name`. The parser already preferred that object, so this was
-  never a bug — but do not "simplify" it to read `comment.author`, or raw `t2_`
-  ids go on the leaderboards.
+Confirmed against a real delivered event. One trap, which the live payload
+exposed:
 
-- **TRIGGERS ARE NOT ORDERED.** Observed twice: a comment and a reply were
-  posted a second apart, and Devvit delivered the REPLY's event first, both
-  times. Anything that assumes a parent is already known when its reply arrives
-  is wrong. See `drainPending` in `comment-counting.ts`; a `RESCUED n
-  out-of-order replies` log line is that reordering caught in the act.
+**`comment.author` is a USER ID, not a username.** The live payload carried
+`"author":"t2_2mjbzpp4by"`. The username is on the SIBLING `author` object as
+`.name`. Reading `comment.author` puts raw `t2_` ids on the leaderboards.
 
-`triggers.ts` still logs the first payload of each process
-(`TRIGGER first payload sample:` / `TRIGGER parsed as:`), which is the fastest
-way to re-check this if counts ever look wrong.
+**TRIGGERS ARE NOT ORDERED.** Observed twice: a comment and a reply posted a
+second apart, and the REPLY's event was delivered first both times. See
+`drainPending`; a `RESCUED n out-of-order replies` log line is it happening.
+
+### onCommentDelete / onPostDelete: WIRED, NOT YET OBSERVED
+
+Required by the Devvit Rules, handled, and unit tested — but no delete event has
+ever been seen arrive.
+
+A self-test had the app post a comment and then delete it via the API. **No
+event fired.** That test was not representative, and the reason is in the types:
+`EventSource` is `USER | ADMIN | MODERATOR` with no APP value, and the triggers
+doc says triggers respond to "a user's or moderator's action". An app deleting
+its own comment is none of those.
+
+So the open question is narrow: does a REAL user deleting their own comment fire
+it? To settle it, comment on an r/ffbottest daily thread from a normal account,
+delete the comment, and watch for `FORGOT top-level …`. The log line includes
+`source=` and `reason=` to confirm provenance.
+
+If it turns out not to fire at all, the fallback is the reconciliation walk,
+which already prunes vanished comments and refreshes tombstoned authors (both
+verified live) — but it visits one thread per cycle, so it is slower than the
+rules intend, and the submission should say so rather than claim a trigger path
+that does not fire.
 
 ## Verified live on r/ffbottest
 

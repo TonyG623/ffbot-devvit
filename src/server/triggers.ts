@@ -10,7 +10,11 @@ import {
   recordComment,
   untrackPost,
 } from './comment-store.ts'
-import {parseCommentCreate, parseDelete} from './trigger-payload.ts'
+import {
+  parseCommentCreate,
+  parseCommentDelete,
+  parsePostDelete,
+} from './trigger-payload.ts'
 
 /**
  * The wire format is inferred from the protobufs rather than contracted by the
@@ -59,23 +63,26 @@ export async function onCommentCreate(raw: unknown): Promise<void> {
  * thread per cycle -- far too slow to rely on for a deletion request.
  */
 export async function onCommentDelete(raw: unknown): Promise<void> {
-  const parsed = parseDelete(raw)
-  if (!parsed?.commentId || !parsed.postId) {
+  const parsed = parseCommentDelete(raw)
+  if (!parsed?.commentId) {
     console.warn('WARN: could not parse comment-delete payload; ignoring')
     return
   }
   if (!(await isTracked(parsed.postId))) return
 
   const what = await forgetComment(parsed.postId, parsed.commentId)
+  // source: 1 USER, 2 ADMIN, 3 MODERATOR. There is no APP value, which is why
+  // an app deleting its own comment fires nothing.
   console.log(
-    `FORGOT ${what} ${parsed.commentId} on ${parsed.postId} (deleted)`,
+    `FORGOT ${what} ${parsed.commentId} on ${parsed.postId} ` +
+      `(source=${parsed.source ?? '?'} reason=${parsed.reason ?? '?'})`,
   )
 }
 
 /** Same requirement, for a whole post: drop everything stored about it. */
 export async function onPostDelete(raw: unknown): Promise<void> {
-  const parsed = parseDelete(raw)
-  if (!parsed?.postId) {
+  const parsed = parsePostDelete(raw)
+  if (!parsed) {
     console.warn('WARN: could not parse post-delete payload; ignoring')
     return
   }

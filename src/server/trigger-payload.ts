@@ -1,19 +1,24 @@
 /**
- * Parsing for the onCommentCreate trigger body.
+ * Parsing for trigger request bodies.
  *
- * `@devvit/web` does not export a type for what Devvit POSTs to a trigger
- * endpoint, so this is written against the protobuf definitions
- * (`CommentCreate` wrapping `CommentV2`, in
- * `@devvit/protos/types/devvit/reddit/v2alpha/commentv2.d.ts`) rather than
- * against anything guaranteed by the SDK's public API.
+ * These shapes ARE contracted: `@devvit/web/shared` re-exports
+ * `OnCommentCreateRequest`, `OnCommentDeleteRequest` and `OnPostDeleteRequest`
+ * from `@devvit/shared/types/triggers`. An earlier version of this file
+ * reconstructed them by hand, on the mistaken belief that no types were
+ * exported — they are named `On*Request` rather than after the proto messages,
+ * which is why searching for the message names came up empty.
  *
- * That means the wire shape is INFERRED, not contracted. So this parser is
- * deliberately permissive: it accepts the event either wrapped in `{event: …}`
- * or bare, tolerates snake_case, and returns undefined rather than throwing on
- * anything it does not recognise. The caller logs the raw payload the first
- * time it sees one, so the real shape can be confirmed against a live event
- * instead of assumed.
+ * What still needs care: these are TypeScript types over a JSON body, so
+ * nothing validates them at runtime, and the JSON does not always match the
+ * declared types — `createdAt` is typed `Date` but arrives as a number. So
+ * every field is read defensively and a payload that is not what we expect
+ * yields `undefined` rather than a throw.
  */
+import type {
+  OnCommentCreateRequest,
+  OnCommentDeleteRequest,
+  OnPostDeleteRequest,
+} from '@devvit/web/shared'
 
 /** The fields the counting rules actually need. */
 export type ParsedComment = {
@@ -31,25 +36,16 @@ function str(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined
 }
 
-function pick(obj: Record<string, unknown>, ...names: string[]): unknown {
-  for (const name of names) {
-    if (obj[name] !== undefined && obj[name] !== null) return obj[name]
-  }
-  return undefined
-}
-
-/** Devvit sends `t1_abc`; some payloads carry the bare id. Normalise. */
+/** Devvit sends `t1_abc`; be tolerant of a bare id. */
 function withPrefix(id: string, prefix: 't1_' | 't3_'): string {
   return id.startsWith(prefix) ? id : `${prefix}${id}`
 }
 
-/**
- * Reddit timestamps arrive as seconds in protobuf and sometimes as
- * milliseconds after a JSON hop. Anything below this is clearly seconds.
- */
+/** Protobuf timestamps arrive as seconds or milliseconds depending on the hop. */
 const YEAR_2001_MS = 1_000_000_000_000
 
 function toMillis(value: unknown): number {
+  if (value instanceof Date) return value.getTime()
   const n = typeof value === 'number' ? value : Number(value)
   if (!Number.isFinite(n) || n <= 0) return Date.now()
   return n < YEAR_2001_MS ? n * 1000 : n
@@ -57,86 +53,66 @@ function toMillis(value: unknown): number {
 
 export function parseCommentCreate(raw: unknown): ParsedComment | undefined {
   if (typeof raw !== 'object' || raw === null) return undefined
-  const root = raw as Record<string, unknown>
+  const event = raw as Partial<OnCommentCreateRequest>
 
-  // Accept {event: {...}}, {data: {...}} or the event itself.
-  const envelope = (pick(root, 'event', 'data') ?? root) as Record<
-    string,
-    unknown
-  >
-  const comment = pick(envelope, 'comment') as
-    | Record<string, unknown>
-    | undefined
+  const comment = event.comment
   if (!comment) return undefined
 
-  const commentId = str(pick(comment, 'id'))
-  const parentId = str(pick(comment, 'parentId', 'parent_id'))
-  const body = pick(comment, 'body')
-  if (!commentId || !parentId) return undefined
+  const commentId = str(comment.id)
+  const parentId = str(comment.parentId)
+  const postId = str(comment.postId) ?? str(event.post?.id)
+  if (!commentId || !parentId || !postId) return undefined
 
-  // postId can live on the comment or on the sibling post object.
-  const post = pick(envelope, 'post') as Record<string, unknown> | undefined
-  const postId =
-    str(pick(comment, 'postId', 'post_id')) ??
-    (post ? str(pick(post, 'id')) : undefined)
-  if (!postId) return undefined
-
-  // MUST come from the sibling `author` object, not from `comment.author`.
-  // A live payload showed comment.author = "t2_2mjbzpp4by" -- a user ID, not a
-  // username. Reading it would put raw t2_ ids on the leaderboards.
-  const authorObj = pick(envelope, 'author') as
-    | Record<string, unknown>
-    | undefined
-  const author =
-    (authorObj ? str(pick(authorObj, 'name', 'username')) : undefined) ??
-    str(pick(comment, 'author')) ??
-    ''
+  // The USERNAME comes from the sibling `author` object. `comment.author` is
+  // typed as a string but carries the author's t2_ ID — confirmed against a
+  // live payload, which held "t2_2mjbzpp4by". Reading it would put raw ids on
+  // the leaderboards. Do not "simplify" this.
+  const author = str(event.author?.name) ?? ''
 
   return {
     commentId: withPrefix(commentId, 't1_'),
     postId: withPrefix(postId, 't3_'),
     parentId,
     author,
-    body: typeof body === 'string' ? body : '',
-    permalink: str(pick(comment, 'permalink')) ?? '',
-    createdAtMs: toMillis(
-      pick(comment, 'createdAt', 'created_at', 'createdUtc'),
-    ),
-    removed: Boolean(pick(comment, 'deleted', 'spam')),
+    body: str(comment.body) ?? '',
+    permalink: str(comment.permalink) ?? '',
+    createdAtMs: toMillis(comment.createdAt),
+    removed: Boolean(comment.deleted || comment.spam),
   }
 }
 
-/** The ids a delete event carries. Shape inferred the same way as above. */
+/** The ids and provenance a delete event carries. */
 export type ParsedDelete = {
   commentId?: string
-  postId?: string
+  postId: string
+  /** EventSource: 1 USER, 2 ADMIN, 3 MODERATOR. Logged, not acted on. */
+  source?: number
+  /** DeletionReason: 1 SPAM, 2 LEGAL, 3 OTHER, 4 UNKNOWN, 5 EXPLICIT. */
+  reason?: number
 }
 
-export function parseDelete(raw: unknown): ParsedDelete | undefined {
+export function parseCommentDelete(raw: unknown): ParsedDelete | undefined {
   if (typeof raw !== 'object' || raw === null) return undefined
-  const root = raw as Record<string, unknown>
-  const envelope = (pick(root, 'event', 'data') ?? root) as Record<
-    string,
-    unknown
-  >
-
-  // CommentDelete carries flat ids; PostDelete carries a postId. Some payloads
-  // nest the objects instead, so accept either.
-  const comment = pick(envelope, 'comment') as
-    | Record<string, unknown>
-    | undefined
-  const post = pick(envelope, 'post') as Record<string, unknown> | undefined
-
-  const commentId =
-    str(pick(envelope, 'commentId', 'comment_id')) ??
-    (comment ? str(pick(comment, 'id')) : undefined)
-  const postId =
-    str(pick(envelope, 'postId', 'post_id')) ??
-    (post ? str(pick(post, 'id')) : undefined)
-
-  if (!commentId && !postId) return undefined
+  const event = raw as Partial<OnCommentDeleteRequest>
+  const commentId = str(event.commentId)
+  const postId = str(event.postId)
+  if (!commentId || !postId) return undefined
   return {
-    ...(commentId ? {commentId: withPrefix(commentId, 't1_')} : {}),
-    ...(postId ? {postId: withPrefix(postId, 't3_')} : {}),
+    commentId: withPrefix(commentId, 't1_'),
+    postId: withPrefix(postId, 't3_'),
+    source: typeof event.source === 'number' ? event.source : undefined,
+    reason: typeof event.reason === 'number' ? event.reason : undefined,
+  }
+}
+
+export function parsePostDelete(raw: unknown): ParsedDelete | undefined {
+  if (typeof raw !== 'object' || raw === null) return undefined
+  const event = raw as Partial<OnPostDeleteRequest>
+  const postId = str(event.postId)
+  if (!postId) return undefined
+  return {
+    postId: withPrefix(postId, 't3_'),
+    source: typeof event.source === 'number' ? event.source : undefined,
+    reason: typeof event.reason === 'number' ? event.reason : undefined,
   }
 }
