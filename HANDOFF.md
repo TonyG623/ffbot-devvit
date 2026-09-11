@@ -417,6 +417,34 @@ the app account posting ~14 threads a day and editing each every 15 minutes,
 the modmail alerts on config breakage, and reading another subreddit's content
 (which the removed benchmark did, but the shipped code does not).
 
+### Facts for the Port Submission form
+
+Gathered so the form can be filled in one sitting rather than re-derived.
+
+| Field they will likely ask for | Answer |
+|---|---|
+| Registered app name | FFBot (the legacy Python bot) |
+| Devvit app name | `ffbot-app` — `ffbot` was taken by the u/FFBot account |
+| Devvit app account | u/ffbot-app |
+| Developer account | u/tonyg623 (moderates r/fantasyfootball) |
+| Port source | https://github.com/TonyG623/ffbot-devvit (public) |
+| Original source | github.com/TonyG623/FFBotPrivate (private) |
+| Target subreddit | r/fantasyfootball |
+| Test subreddit | r/ffbottest |
+| External backends / fetch plugin | None. No `http` permission; `reddit` + `redis` only |
+| Permissions requested | `reddit` (moderator scope), `redis` |
+
+What the port does, in a sentence: posts r/fantasyfootball's ~14 daily
+discussion threads, maintains per-thread helper leaderboards and an unanswered
+questions table, and keeps a stickied Index thread linking them all — driven by
+YAML config on the subreddit wiki.
+
+How it was tested, if they ask: 64 unit tests, including the counting rules run
+against 30 real comments captured from a live r/fantasyfootball thread, and the
+full posting/counting/rendering pipeline verified live on r/ffbottest. Thread
+titles were diffed against the running Python bot's real output for
+2026-09-08 — all 14 matched exactly.
+
 **Name mismatch to be ready for:** the modmail registered the app as "FFBot",
 but the Devvit app is `ffbot-app` (`ffbot` was taken by the existing u/FFBot
 account). The form will probably ask how they correspond.
