@@ -452,15 +452,46 @@ form, so the form is not the end of the wait.
 | 2 | Complete Reddit Earn onboarding | **DONE** - Earn page shows "You're enrolled!" |
 | 3 | App running on Developer Platform | **DONE** - published unlisted as v0.0.2 on 2026-09-10 |
 | 4 | Test the app | Largely done; see gaps below |
-| 5 | File the Port Submission form | **NOT DONE - must be last** |
+| 5 | File the Port Submission form | **DONE 2026-09-10** |
 
 Steps 1 and 2 were confirmed done on 2026-09-10 from the portal and Earn
 screenshots. That clears the critical path: Earn onboarding was the one item
 with external turnaround that could not be rushed at the end.
 
-**Only step 5 remains: the Port Submission form.** It requires signing in as
-tonyg623 and cannot be done from a coding session. The facts it will ask for
-are collected below.
+**All five steps are done as of 2026-09-10.** Reddit reviews the app (typically
+about a week) and processes payment within 45 days of the submission.
+
+### What was submitted
+
+- App link: `https://developers.reddit.com/apps/ffbot-app` (published v0.0.4, unlisted)
+- Testing: the unit-test inventory, the live r/ffbottest verification, the
+  rate-limit measurements that forced the redesign, and an explicit statement of
+  the two gaps (never run at in-season volume; onCommentDelete wired but never
+  observed firing)
+- Feedback given to the Devvit team: the ~4 req/s rate limit being the real
+  constraint, `comment.author` carrying a t2_ ID rather than a username,
+  triggers not being ordered, and the lack of docs on when onCommentDelete fires
+- **Data API account migration: YES, u/FFBot converts to the app account**
+
+### What the account conversion changes
+
+u/FFBot keeps its history and karma and becomes the app account, so
+r/fantasyfootball keeps seeing the username it has seen for years.
+
+Two consequences worth understanding:
+
+1. **The cutover becomes safe by construction.** Once converted, the Python bot
+   on the droplet cannot authenticate as u/FFBot, so it cannot post. The
+   duplicate-daily-threads risk that this file called the highest-risk item is
+   now structurally impossible rather than a sequencing problem to get right.
+2. **There is no fallback to the droplet.** That was the cost, accepted
+   knowingly. The exposure is the first in-season Sunday, which is the volume
+   the port has never run at. r/Devvit modmail can discuss conversion timing if
+   a safety net during that window is wanted.
+
+The plaintext u/FFBot password in FFBotPrivate also stops being a live risk once
+the account is not reachable by password login. Regenerating the OAuth app
+secret is still worth doing.
 
 **Step 3 done 2026-09-10: published as v0.0.2, unlisted.**
 `https://developers.reddit.com/apps/ffbot-app`. Unlisted means installable by
