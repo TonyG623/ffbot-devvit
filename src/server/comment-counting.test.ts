@@ -19,6 +19,7 @@ import {
   type IncomingComment,
   isSeeded,
   markSeeded,
+  pruneMissing,
   type RedisLike,
   readThreadState,
   recordComment,
@@ -391,4 +392,142 @@ test('a rescued reply is not double counted by the reconciliation walk', async (
   assert.equal(await recordComment(db, reply), 'duplicate')
 
   assert.deepEqual(await readThreadState(db, POST), afterTriggers)
+})
+
+test('a deleted comment is pruned, reversing exactly what it contributed', async () => {
+  // Nothing fires when a user deletes their own comment, so without pruning a
+  // deleted question sits on the unanswered table all day and its replies keep
+  // crediting their authors. The Python got this free by rebuilding every
+  // cycle; an incremental design has to do it deliberately.
+  const db = fakeRedis()
+  await trackPost(db, POST)
+  const t0 = 1_700_000_000_000
+  const base = {postId: POST, permalink: '/c/x'}
+
+  await recordComment(db, {
+    ...base,
+    commentId: 't1_keep',
+    parentId: POST,
+    author: 'staying',
+    body: 'q1',
+    createdAtMs: t0,
+  })
+  await recordComment(db, {
+    ...base,
+    commentId: 't1_gone',
+    parentId: POST,
+    author: 'leaving',
+    body: 'q2',
+    createdAtMs: t0,
+  })
+  await recordComment(db, {
+    ...base,
+    commentId: 't1_gonereply',
+    parentId: 't1_gone',
+    author: 'helper',
+    body: 'a substantive answer to the doomed question',
+    createdAtMs: t0,
+  })
+  await recordComment(db, {
+    ...base,
+    commentId: 't1_keepreply',
+    parentId: 't1_keep',
+    author: 'helper',
+    body: 'a substantive answer to the surviving question',
+    createdAtMs: t0,
+  })
+
+  let state = await readThreadState(db, POST)
+  assert.equal(state.topLevelSeen, 2)
+  assert.equal(state.allCount['helper'], 2)
+  assert.equal(state.helpCount['helper'], 2)
+
+  // The next complete walk sees only the surviving pair.
+  const cutoff = Math.trunc(t0 / 1000) + 60
+  const pruned = await pruneMissing(
+    db,
+    POST,
+    new Set(['t1_keep', 't1_keepreply']),
+    cutoff,
+  )
+  assert.equal(pruned, 2, 'the comment and its reply')
+
+  state = await readThreadState(db, POST)
+  assert.equal(state.topLevelSeen, 1)
+  assert.deepEqual(
+    state.unanswered.map(r => r.author),
+    ['staying'],
+  )
+  // helper loses credit for the reply that no longer exists, and keeps the other.
+  assert.equal(state.allCount['helper'], 1)
+  assert.equal(state.helpCount['helper'], 1)
+})
+
+test('pruning never strands a negative count', async () => {
+  const db = fakeRedis()
+  await trackPost(db, POST)
+  const t0 = 1_700_000_000_000
+  await recordComment(db, {
+    postId: POST,
+    permalink: '/c/x',
+    commentId: 't1_top',
+    parentId: POST,
+    author: 'asker',
+    body: 'q',
+    createdAtMs: t0,
+  })
+  await recordComment(db, {
+    postId: POST,
+    permalink: '/c/x',
+    commentId: 't1_r',
+    parentId: 't1_top',
+    author: 'helper',
+    body: 'a substantive answer worth counting',
+    createdAtMs: t0,
+  })
+
+  // Prune twice; the second pass has nothing left to reverse.
+  const cutoff = Math.trunc(t0 / 1000) + 60
+  await pruneMissing(db, POST, new Set(), cutoff)
+  await pruneMissing(db, POST, new Set(), cutoff)
+
+  const state = await readThreadState(db, POST)
+  assert.equal(state.allCount['helper'], undefined)
+  assert.equal(state.helpCount['helper'], undefined)
+  assert.equal(state.topLevelSeen, 0)
+})
+
+test('RACE: a comment posted during the walk is not pruned', async () => {
+  // The walk reads a snapshot. A comment created after it began cannot be in
+  // what it saw, so treating absence as deletion would delete something the
+  // trigger had just correctly counted.
+  const db = fakeRedis()
+  await trackPost(db, POST)
+  const walkStarted = 1_700_000_000_000
+
+  await recordComment(db, {
+    postId: POST,
+    permalink: '/c/new',
+    commentId: 't1_arrived_mid_walk',
+    parentId: POST,
+    author: 'quick',
+    // One second AFTER the walk began.
+    createdAtMs: walkStarted + 1000,
+    body: 'q',
+  })
+
+  const pruned = await pruneMissing(
+    db,
+    POST,
+    new Set(), // the walk saw nothing
+    Math.trunc(walkStarted / 1000),
+  )
+  assert.equal(pruned, 0, 'must survive: it is newer than the walk')
+
+  const state = await readThreadState(db, POST)
+  assert.equal(state.topLevelSeen, 1)
+  assert.deepEqual(
+    state.unanswered.map(r => r.author),
+    ['quick'],
+  )
 })

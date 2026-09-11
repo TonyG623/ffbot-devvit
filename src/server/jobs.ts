@@ -18,6 +18,7 @@ import {
   isSeeded,
   markRemoved,
   markSeeded,
+  pruneMissing,
   readThreadState,
   recordComment,
   trackPost,
@@ -375,8 +376,12 @@ async function reconcileOne(
   deadline: number,
   skip: number,
 ): Promise<{hitBudget: boolean; nextSkip: number}> {
+  // Captured BEFORE the walk: anything created after this cannot be expected to
+  // appear in what the walk saw, so it must not be pruned.
+  const cutoffSec = Math.trunc(Date.now() / 1000)
   const walked = await walkThread(thread.postId, deadline, skip)
 
+  const seen = new Set(walked.comments.map(c => c.commentId))
   const tally: Record<string, number> = {}
   for (const c of walked.comments) {
     const kind = await recordComment({
@@ -405,6 +410,14 @@ async function reconcileOne(
       `${tally.duplicate ?? 0} already counted` +
       (walked.partial ? ', PARTIAL' : ''),
   )
+
+  if (!walked.partial) {
+    // A complete pass is the only time absence is evidence of deletion.
+    const pruned = await pruneMissing(thread.postId, seen, cutoffSec)
+    if (pruned > 0) {
+      console.log(`PRUNED ${pruned} vanished entries from ${thread.postId}`)
+    }
+  }
 
   if (walked.partial) {
     const nextSkip = skip + walked.topLevelSeen

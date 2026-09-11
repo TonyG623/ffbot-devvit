@@ -73,6 +73,7 @@ const keySubReplies = (postId: string): string =>
 const keyRemoved = (postId: string): string => `ffbot:cc:${postId}:removed`
 const keySeeded = (postId: string): string => `ffbot:cc:${postId}:seeded`
 const keyPending = (postId: string): string => `ffbot:cc:${postId}:pending`
+const keyReplies = (postId: string): string => `ffbot:cc:${postId}:replies`
 const keyHelp = (postId: string): string => `ffbot:cc:${postId}:help`
 const keyAll = (postId: string): string => `ffbot:cc:${postId}:all`
 
@@ -174,6 +175,7 @@ export async function recordComment(
         parent: c.parentId,
         author: c.author,
         substantive: isSubstantive(c.body),
+        createdSec: Math.trunc(c.createdAtMs / 1000),
       }),
     })
     await db.expire(keyPending(c.postId), TTL_SECONDS)
@@ -181,18 +183,41 @@ export async function recordComment(
   }
 
   if (!(await claim(db, c.postId, c.commentId))) return 'duplicate'
-  await applyReply(db, c.postId, c.parentId, c.author, isSubstantive(c.body))
+  await applyReply(
+    db,
+    c.postId,
+    c.commentId,
+    c.parentId,
+    c.author,
+    isSubstantive(c.body),
+    Math.trunc(c.createdAtMs / 1000),
+  )
   return 'direct-reply'
 }
 
-/** Apply one direct reply's contribution to the three counters. */
+/**
+ * Apply one direct reply's contribution to the counters, and record what it
+ * contributed. The record is what makes deletion reversible: aggregate counts
+ * alone cannot be un-done, because they do not remember who contributed what.
+ */
 async function applyReply(
   db: RedisLike,
   postId: string,
+  commentId: string,
   parentId: string,
   author: string,
   substantive: boolean,
+  createdSec: number,
 ): Promise<void> {
+  await db.hSet(keyReplies(postId), {
+    [commentId]: JSON.stringify({
+      p: parentId,
+      a: author,
+      s: substantive ? 1 : 0,
+      t: createdSec,
+    }),
+  })
+  await db.expire(keyReplies(postId), TTL_SECONDS)
   if (substantive) {
     // Author-independent: a long reply answers the question whoever wrote it.
     await db.hIncrBy(keySubReplies(postId), parentId, 1)
@@ -223,7 +248,12 @@ async function drainPending(
 
   let rescued = 0
   for (const [commentId, raw] of Object.entries(pending)) {
-    let entry: {parent: string; author: string; substantive: boolean}
+    let entry: {
+      parent: string
+      author: string
+      substantive: boolean
+      createdSec: number
+    }
     try {
       entry = JSON.parse(raw)
     } catch {
@@ -234,10 +264,88 @@ async function drainPending(
 
     await db.hDel(keyPending(postId), [commentId])
     if (!(await claim(db, postId, commentId))) continue
-    await applyReply(db, postId, parentId, entry.author, entry.substantive)
+    await applyReply(
+      db,
+      postId,
+      commentId,
+      parentId,
+      entry.author,
+      entry.substantive,
+      entry.createdSec,
+    )
     rescued++
   }
   return rescued
+}
+
+/**
+ * Remove comments that have vanished from the thread.
+ *
+ * The trigger path only ever ADDS. Nothing fires when a user deletes their own
+ * comment, so without this a deleted question sits on the unanswered table for
+ * the rest of the day and its replies keep crediting their authors. The Python
+ * got this for free by rebuilding from scratch every cycle; an incremental
+ * design has to do it deliberately.
+ *
+ * Only safe after a COMPLETE walk: a partial pass has not seen the whole
+ * thread, so absence proves nothing. `cutoffSec` is the second guard -- a
+ * comment created after the walk began cannot be expected in `seen`, and
+ * pruning it would delete something the trigger had just correctly counted.
+ *
+ * Returns how many entries were pruned.
+ */
+export async function pruneMissing(
+  db: RedisLike,
+  postId: string,
+  seen: Set<string>,
+  cutoffSec: number,
+): Promise<number> {
+  let pruned = 0
+
+  // Vanished replies: reverse exactly what each one contributed.
+  const replies = await db.hGetAll(keyReplies(postId))
+  for (const [commentId, raw] of Object.entries(replies ?? {})) {
+    if (seen.has(commentId)) continue
+    let rec: {p: string; a: string; s: number; t: number}
+    try {
+      rec = JSON.parse(raw)
+    } catch {
+      await db.hDel(keyReplies(postId), [commentId])
+      continue
+    }
+    if (rec.t >= cutoffSec) continue
+
+    if (rec.s === 1) await db.hIncrBy(keySubReplies(postId), rec.p, -1)
+    if (isRealAuthor(rec.a)) {
+      await db.hIncrBy(keyAll(postId), rec.a, -1)
+      if (rec.s === 1) await db.hIncrBy(keyHelp(postId), rec.a, -1)
+    }
+    await db.hDel(keyReplies(postId), [commentId])
+    await db.hDel(keySeen(postId), [commentId])
+    pruned++
+  }
+
+  // Vanished top-level comments: drop the row and its reply tally.
+  const facts = await db.hGetAll(keyFacts(postId))
+  for (const [commentId, raw] of Object.entries(facts ?? {})) {
+    if (seen.has(commentId)) continue
+    let parsed: TopLevelFacts
+    try {
+      parsed = JSON.parse(raw)
+    } catch {
+      await db.hDel(keyFacts(postId), [commentId])
+      continue
+    }
+    if (parsed.t >= cutoffSec) continue
+
+    await db.hDel(keyFacts(postId), [commentId])
+    await db.hDel(keySubReplies(postId), [commentId])
+    await db.hDel(keyRemoved(postId), [commentId])
+    await db.hDel(keySeen(postId), [commentId])
+    pruned++
+  }
+
+  return pruned
 }
 
 /**
@@ -284,7 +392,8 @@ function parseCounts(raw: Record<string, string>): Record<string, number> {
   const out: Record<string, number> = {}
   for (const [k, v] of Object.entries(raw)) {
     const n = Number(v)
-    if (Number.isFinite(n) && n !== 0) out[k] = n
+    // Decrements from pruning must never surface as a negative tally.
+    if (Number.isFinite(n) && n > 0) out[k] = n
   }
   return out
 }
@@ -372,6 +481,7 @@ export async function clearThreadState(
     db.del(keyRemoved(postId)),
     db.del(keySeeded(postId)),
     db.del(keyPending(postId)),
+    db.del(keyReplies(postId)),
     db.del(keyHelp(postId)),
     db.del(keyAll(postId)),
   ])

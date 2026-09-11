@@ -84,9 +84,20 @@ reconciliation walk re-read comments already counted without double counting.
 
 ### Reconciliation, and why it is rotated
 
-Triggers drift three ways: comments posted while the app was down, mod removals
-(no create event fires), and events Devvit simply does not deliver. So a
-bounded walk repairs **one thread per cycle, rotating** via a Redis counter.
+Triggers drift four ways: comments posted while the app was down, mod removals
+(no create event fires), events Devvit simply does not deliver, and **comments
+their author deleted** -- nothing fires for that either, and the trigger path
+only ever ADDS. So a bounded walk repairs **one thread per cycle, rotating**
+via a Redis counter.
+
+Deletion repair is the subtle one. `pruneMissing` reverses exactly what a
+vanished comment contributed, which is why every counted reply is recorded
+individually: aggregate counts cannot be un-done, because they do not remember
+who contributed what. Pruning runs ONLY after a complete walk (a partial pass
+has not seen the whole thread, so absence proves nothing) and ONLY for comments
+older than the moment the walk began (anything newer cannot be expected in what
+the walk saw, and pruning it would delete what the trigger had just correctly
+counted).
 Reconciling every thread every cycle would re-incur the exact rate-limited cost
 the trigger design exists to avoid. Rotating gives a flat ~20s of API time per
 cycle regardless of thread count; each thread gets repaired every N cycles.

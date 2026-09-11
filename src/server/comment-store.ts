@@ -35,6 +35,12 @@ export const clearRemoved = (
   commentId: string,
 ): Promise<void> => counting.clearRemoved(db, postId, commentId)
 
+export const pruneMissing = (
+  postId: string,
+  seen: Set<string>,
+  cutoffSec: number,
+): Promise<number> => counting.pruneMissing(db, postId, seen, cutoffSec)
+
 export const markSeeded = (postId: string): Promise<void> =>
   counting.markSeeded(db, postId)
 
