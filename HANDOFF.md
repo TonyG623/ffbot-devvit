@@ -10,8 +10,9 @@ Paste this into a coding session with terminal access, run from
 FFBot is a Reddit bot that has run r/fantasyfootball's daily threads for years:
 Python + PRAW on a DigitalOcean droplet, driven by cron. Reddit offered a $1,000
 bounty to port it onto Devvit (their Developer Platform, where Reddit hosts the
-app). The modmail arrived 2026-09-08 and gives 60 days, so the deadline is
-roughly 2026-11-07.
+app). The modmail arrived **2026-09-07** and gives 60 days, so the deadline is
+**2026-11-06**. (An earlier draft of this file said Sep 8 / Nov 7; the modmail
+screenshot is dated Sep 7, so the real deadline is a day earlier.)
 
 The port is written and **running live on r/ffbottest**. It is not on
 r/fantasyfootball yet.
@@ -367,6 +368,55 @@ walk ever needs re-measuring or the trigger re-proving.
   password and regenerating the app secret is the only fix. The port needs none
   of them.
 - Unpushed commits in this repo. `git push`.
-- Bounty admin, separate from the code: enroll the app in the migration portal,
-  complete Reddit Earn onboarding (payment gate, has external turnaround, start
-  early), then file the Port Submission form.
+- Bounty admin, separate from the code. See the checklist below.
+
+## Bounty program checklist (from the r/Devvit modmail, 2026-09-07)
+
+Deadline **2026-11-06**. Payment is processed within 45 days of submitting the
+form, so the form is not the end of the wait.
+
+| # | Step | State |
+|---|---|---|
+| 1 | Enroll the app in the Migration Portal | **NOT DONE** |
+| 2 | Complete Reddit Earn onboarding | **NOT DONE - do this FIRST** |
+| 3 | App running on Developer Platform | Partly: playtest only, never published |
+| 4 | Test the app | Largely done; see gaps below |
+| 5 | File the Port Submission form | **NOT DONE - must be last** |
+
+Steps 1, 2 and 5 all require signing in as tonyg623 and cannot be done from a
+coding session.
+
+**Step 2 is the critical path.** The modmail says to complete Earn onboarding
+FIRST, and it is a payment gate with external turnaround (identity/tax
+verification). Everything else can be finished in a day; this one cannot be
+rushed at the end.
+
+**Step 3 needs `devvit publish`, which has never been run.** `devvit list
+installs` shows only `ffbottest (v0.0.1.94)` from playtest plus the
+`ffbot_app_dev` scaffold. Playtest versions are ephemeral and are not a
+published app. Note that `devvit publish` **uploads the source for Reddit to
+review** — which is why the bench/self-test scaffolding was removed first.
+Default is unlisted; `--public` submits for public review. Unlisted is almost
+certainly what this needs, since the app is for one subreddit.
+
+**Step 3, fetch plugin: not needed.** The port makes no external network calls
+and declares no `http` permission — only `reddit` (moderator scope) and
+`redis`. So there is no domain to get approved, and no modmail to r/Devvit
+required for that.
+
+**Step 4 gaps, honestly stated:** 64 unit tests pass and the whole pipeline is
+verified live on r/ffbottest, but the app has never run on r/fantasyfootball,
+and the trigger path has only been observed handling single-digit comment
+volumes. The rate-limit measurements in item 1 are real; the claim that the
+trigger design holds at season volume is reasoned, not observed.
+
+**Devvit Rules: NOT VERIFIED.** The modmail links rules that must be followed
+and neither developers.reddit.com nor reddit.com is reachable from the coding
+session, so they were never read. Things worth checking by hand against them:
+the app account posting ~14 threads a day and editing each every 15 minutes,
+the modmail alerts on config breakage, and reading another subreddit's content
+(which the removed benchmark did, but the shipped code does not).
+
+**Name mismatch to be ready for:** the modmail registered the app as "FFBot",
+but the Devvit app is `ffbot-app` (`ffbot` was taken by the existing u/FFBot
+account). The form will probably ask how they correspond.
