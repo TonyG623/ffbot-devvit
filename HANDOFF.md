@@ -158,14 +158,12 @@ equivalence test fed events in tree order, because that is the order the author
 assumed. It took a real delivery to disprove the assumption. Green tests were
 not sufficient here and are not sufficient for the remaining cutover risks.
 
-## BEFORE SHIPPING - remove the scaffolding
+## Scaffolding: REMOVED 2026-09-10
 
-- `src/server/selftest.ts` and its call in `runCycle`. It posts real comments.
-  Hardcoded to r/ffbottest and guarded to run once per key, but it has no place
-  in production.
-- `src/server/bench.ts`, its `/internal/menu/bench` and
-  `/internal/scheduler/bench` routes, and the matching `devvit.json` entries.
-- The two self-test comments left on r/ffbottest.
+`bench.ts` and `selftest.ts` are gone, along with their routes and `devvit.json`
+entries, and the four self-test comments were deleted from r/ffbottest. The tree
+carries no test scaffolding. Both files are recoverable from git history if the
+walk ever needs re-measuring or the trigger re-proving.
 
 ## Still to test
 
