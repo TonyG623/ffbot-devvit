@@ -143,10 +143,20 @@ event fired.** That test was not representative, and the reason is in the types:
 doc says triggers respond to "a user's or moderator's action". An app deleting
 its own comment is none of those.
 
-So the open question is narrow: does a REAL user deleting their own comment fire
-it? To settle it, comment on an r/ffbottest daily thread from a normal account,
-delete the comment, and watch for `FORGOT top-level …`. The log line includes
-`source=` and `reason=` to confirm provenance.
+A second self-test had the app REMOVE the comment as a moderator, on the theory
+that MODERATOR is a valid EventSource. **Also silent.** Almost certainly because
+a mod removal is not a deletion — the comment still exists, merely hidden — so
+`CommentDelete` is the wrong event for it. Mod removals are instead picked up by
+`markRemoved` during reconciliation, which is already wired.
+
+**Neither test was representative, and no action available to the app is.** The
+app cannot produce a USER-sourced delete, which is the only case left. Do not
+spend a third attempt engineering around this.
+
+The remaining question is narrow: does a REAL user deleting their own comment
+fire it? To settle it, comment on an r/ffbottest daily thread from a normal
+account, delete the comment, and watch for `FORGOT top-level …`. The log line
+includes `source=` and `reason=` to confirm provenance.
 
 **The fallback is VERIFIED LIVE (2026-09-10).** After a comment was deleted from
 Reddit, the reconciliation walk logged `PRUNED 1 vanished entries` and the next
