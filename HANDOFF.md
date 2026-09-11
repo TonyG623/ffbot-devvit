@@ -340,6 +340,30 @@ walk ever needs re-measuring or the trigger re-proving.
   `npm test` did not run lint, so nobody noticed. Added a config matching the
   actual style; lint is now clean and part of `npm test`.
 
+## Transient platform errors are normal; the cron is the retry
+
+Observed once on r/ffbottest, immediately after `EDITING INDEX`:
+
+```
+Error: 2 UNKNOWN: redis ZRANGE: i/o timeout
+  at ... moderation_msg.js ... /srv/elysium.cjs
+```
+
+**This is not the app's error.** Nothing here uses sorted sets; the trace runs
+through Devvit's own runtime during a Reddit moderation call. It is a
+platform-side timeout.
+
+No retry logic was added, deliberately. Every phase is idempotent — submission
+is guarded by `ALREADY SUBMITTED, USING:`, edits are recomputed from Redis,
+counters are claim-guarded — so the next cron tick redoes whatever failed, at
+most fifteen minutes later. Adding retries inside a job would spend the
+execution budget on something the schedule already handles, and the API is rate
+limited, so retrying immediately is the wrong instinct.
+
+What this does mean: an occasional cycle will silently do less than a full pass.
+If a thread looks stale, check for a platform error in the log before assuming
+a bug in the app.
+
 ## Gotchas already hit, do not rediscover these
 
 - **Flair must be set at submit, with the template ID.** Reddit rejects
