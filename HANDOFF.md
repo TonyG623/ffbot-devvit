@@ -377,19 +377,18 @@ form, so the form is not the end of the wait.
 
 | # | Step | State |
 |---|---|---|
-| 1 | Enroll the app in the Migration Portal | **NOT DONE** |
-| 2 | Complete Reddit Earn onboarding | **NOT DONE - do this FIRST** |
+| 1 | Enroll the app in the Migration Portal | **DONE** - portal shows FFBot "Registered / Applied for bounty" |
+| 2 | Complete Reddit Earn onboarding | **DONE** - Earn page shows "You're enrolled!" |
 | 3 | App running on Developer Platform | Partly: playtest only, never published |
 | 4 | Test the app | Largely done; see gaps below |
 | 5 | File the Port Submission form | **NOT DONE - must be last** |
 
-Steps 1, 2 and 5 all require signing in as tonyg623 and cannot be done from a
-coding session.
+Steps 1 and 2 were confirmed done on 2026-09-10 from the portal and Earn
+screenshots. That clears the critical path: Earn onboarding was the one item
+with external turnaround that could not be rushed at the end.
 
-**Step 2 is the critical path.** The modmail says to complete Earn onboarding
-FIRST, and it is a payment gate with external turnaround (identity/tax
-verification). Everything else can be finished in a day; this one cannot be
-rushed at the end.
+Step 5 still requires signing in as tonyg623 and cannot be done from a coding
+session. **What remains is step 3 (publish) and step 5 (the form).**
 
 **Step 3 needs `devvit publish`, which has never been run.** `devvit list
 installs` shows only `ffbottest (v0.0.1.94)` from playtest plus the

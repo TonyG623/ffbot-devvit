@@ -13,6 +13,7 @@
  */
 import {context, reddit, scheduler, settings} from '@devvit/web/server'
 import type {FfbotConfig, ThreadConfig} from '../shared/types.ts'
+import {isSubstantive} from './comment-counting.ts'
 import {
   clearRemoved,
   isSeeded,
@@ -21,6 +22,8 @@ import {
   pruneMissing,
   readThreadState,
   recordComment,
+  refreshReply,
+  refreshTopLevel,
   trackPost,
 } from './comment-store.ts'
 import {fillRowCounts, mergeCounts, walkThread} from './comments.ts'
@@ -383,6 +386,7 @@ async function reconcileOne(
 
   const seen = new Set(walked.comments.map(c => c.commentId))
   const tally: Record<string, number> = {}
+  let refreshed = 0
   for (const c of walked.comments) {
     const kind = await recordComment({
       commentId: c.commentId,
@@ -395,10 +399,28 @@ async function reconcileOne(
       removed: c.removed,
     })
     tally[kind] = (tally[kind] ?? 0) + 1
-    // A mod removal never fires a create event, so it can only be seen here.
+
+    // recordComment writes a comment once and short-circuits on every later
+    // sighting, so anything that changes AFTER creation can only be picked up
+    // here. None of these fire a create event.
     if (c.isTopLevel) {
+      // A mod removal.
       if (c.removed) await markRemoved(thread.postId, c.commentId)
       else await clearRemoved(thread.postId, c.commentId)
+      // An author deleting their comment, which tombstones the author name.
+      if (await refreshTopLevel(thread.postId, c.commentId, c.authorName)) {
+        refreshed++
+      }
+    } else if (
+      // A deleted reply, or an edit that crosses the 20-character threshold.
+      await refreshReply(
+        thread.postId,
+        c.commentId,
+        c.authorName,
+        isSubstantive(c.body),
+      )
+    ) {
+      refreshed++
     }
   }
 
@@ -407,7 +429,7 @@ async function reconcileOne(
       `${tally['top-level'] ?? 0} top-level, ${tally['direct-reply'] ?? 0} replies, ` +
       `${tally['deeper-reply'] ?? 0} deeper (ignored), ` +
       `${tally['orphan-reply'] ?? 0} awaiting parent, ` +
-      `${tally.duplicate ?? 0} already counted` +
+      `${tally.duplicate ?? 0} already counted, ${refreshed} refreshed` +
       (walked.partial ? ', PARTIAL' : ''),
   )
 

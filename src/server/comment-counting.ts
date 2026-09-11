@@ -279,6 +279,77 @@ async function drainPending(
 }
 
 /**
+ * Refresh a top-level comment's stored author.
+ *
+ * `recordComment` writes the author once and short-circuits on every later
+ * sighting, so a comment whose author deleted it (Reddit tombstones the author
+ * to "[deleted]") keeps their real name on the unanswered table indefinitely,
+ * linking to a comment that no longer says anything. The Python dropped those
+ * rows, because `comment.author` came back None and the row build threw.
+ *
+ * Returns true when something actually changed.
+ */
+export async function refreshTopLevel(
+  db: RedisLike,
+  postId: string,
+  commentId: string,
+  author: string,
+): Promise<boolean> {
+  const raw = await db.hGet(keyFacts(postId), commentId)
+  if (!raw) return false
+  let facts: TopLevelFacts
+  try {
+    facts = JSON.parse(raw)
+  } catch {
+    return false
+  }
+  if (facts.a === author) return false
+  facts.a = author
+  await db.hSet(keyFacts(postId), {[commentId]: JSON.stringify(facts)})
+  return true
+}
+
+/**
+ * Re-apply a reply whose author or length has changed since it was counted.
+ *
+ * Covers two drifts at once, neither of which fires a create event: an author
+ * deleting the reply (so it should stop crediting them) and an edit crossing
+ * the 20-character threshold (so it starts or stops counting as substantive).
+ * The recorded contribution is reversed and the current one applied, so this is
+ * safe to run on every reconciliation pass.
+ *
+ * Returns true when something actually changed.
+ */
+export async function refreshReply(
+  db: RedisLike,
+  postId: string,
+  commentId: string,
+  author: string,
+  substantive: boolean,
+): Promise<boolean> {
+  const raw = await db.hGet(keyReplies(postId), commentId)
+  if (!raw) return false
+  let rec: {p: string; a: string; s: number; t: number}
+  try {
+    rec = JSON.parse(raw)
+  } catch {
+    return false
+  }
+  const wasSubstantive = rec.s === 1
+  if (rec.a === author && wasSubstantive === substantive) return false
+
+  // Reverse what was recorded...
+  if (wasSubstantive) await db.hIncrBy(keySubReplies(postId), rec.p, -1)
+  if (isRealAuthor(rec.a)) {
+    await db.hIncrBy(keyAll(postId), rec.a, -1)
+    if (wasSubstantive) await db.hIncrBy(keyHelp(postId), rec.a, -1)
+  }
+  // ...then apply what is true now.
+  await applyReply(db, postId, commentId, rec.p, author, substantive, rec.t)
+  return true
+}
+
+/**
  * Remove comments that have vanished from the thread.
  *
  * The trigger path only ever ADDS. Nothing fires when a user deletes their own

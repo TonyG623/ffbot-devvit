@@ -23,6 +23,8 @@ import {
   type RedisLike,
   readThreadState,
   recordComment,
+  refreshReply,
+  refreshTopLevel,
   trackPost,
 } from './comment-counting.ts'
 import {accumulate, DELETED_AUTHOR, type RawComment} from './comments.ts'
@@ -530,4 +532,104 @@ test('RACE: a comment posted during the walk is not pruned', async () => {
     state.unanswered.map(r => r.author),
     ['quick'],
   )
+})
+
+test('a deleted comment stops showing its author on the table', async () => {
+  // recordComment writes the author once and short-circuits on every later
+  // sighting. Without a refresh, a user who deletes their comment keeps their
+  // name on the unanswered table all day, linked to a comment that no longer
+  // says anything. The Python dropped those rows because comment.author came
+  // back None. Seen live on r/ffbottest.
+  const db = fakeRedis()
+  await trackPost(db, POST)
+  await recordComment(db, {
+    postId: POST,
+    permalink: '/c/x',
+    commentId: 't1_top',
+    parentId: POST,
+    author: 'regretful',
+    body: 'a question',
+    createdAtMs: 1_700_000_000_000,
+  })
+
+  let state = await readThreadState(db, POST)
+  assert.deepEqual(
+    state.unanswered.map(r => r.author),
+    ['regretful'],
+  )
+
+  // The next walk sees the tombstone.
+  assert.equal(await refreshTopLevel(db, POST, 't1_top', DELETED_AUTHOR), true)
+  state = await readThreadState(db, POST)
+  assert.deepEqual(state.unanswered, [], 'no row for a deleted author')
+  // Still counted toward "% helped", matching the Python.
+  assert.equal(state.unansweredTotal, 1)
+  assert.equal(state.topLevelSeen, 1)
+
+  // Idempotent: a later pass over the same tombstone changes nothing.
+  assert.equal(await refreshTopLevel(db, POST, 't1_top', DELETED_AUTHOR), false)
+})
+
+test('a deleted reply stops crediting its author', async () => {
+  const db = fakeRedis()
+  await trackPost(db, POST)
+  const base = {postId: POST, permalink: '/c/x', createdAtMs: 1_700_000_000_000}
+  await recordComment(db, {
+    ...base,
+    commentId: 't1_top',
+    parentId: POST,
+    author: 'asker',
+    body: 'q',
+  })
+  await recordComment(db, {
+    ...base,
+    commentId: 't1_r',
+    parentId: 't1_top',
+    author: 'helper',
+    body: 'a substantive answer worth crediting',
+  })
+  assert.equal((await readThreadState(db, POST)).allCount['helper'], 1)
+
+  assert.equal(await refreshReply(db, POST, 't1_r', DELETED_AUTHOR, true), true)
+  const state = await readThreadState(db, POST)
+  assert.equal(state.allCount['helper'], undefined)
+  assert.equal(state.allCount[DELETED_AUTHOR], undefined)
+})
+
+test('an edit across the 20-character line is applied both ways', async () => {
+  // Editing a comment fires onCommentUpdate, not onCommentCreate, so the
+  // counters never see it. The reconciliation pass is what catches it.
+  const db = fakeRedis()
+  await trackPost(db, POST)
+  const base = {postId: POST, permalink: '/c/x', createdAtMs: 1_700_000_000_000}
+  await recordComment(db, {
+    ...base,
+    commentId: 't1_top',
+    parentId: POST,
+    author: 'asker',
+    body: 'q',
+  })
+  // Starts as a short reply: counts for the leaderboard, not as an answer.
+  await recordComment(db, {
+    ...base,
+    commentId: 't1_r',
+    parentId: 't1_top',
+    author: 'helper',
+    body: 'too short',
+  })
+  let state = await readThreadState(db, POST)
+  assert.equal(state.allCount['helper'], 1)
+  assert.equal(state.helpCount['helper'], undefined)
+
+  // Edited to something substantial.
+  assert.equal(await refreshReply(db, POST, 't1_r', 'helper', true), true)
+  state = await readThreadState(db, POST)
+  assert.equal(state.allCount['helper'], 1, 'still one reply')
+  assert.equal(state.helpCount['helper'], 1, 'now a real answer')
+
+  // And edited back down again.
+  assert.equal(await refreshReply(db, POST, 't1_r', 'helper', false), true)
+  state = await readThreadState(db, POST)
+  assert.equal(state.allCount['helper'], 1)
+  assert.equal(state.helpCount['helper'], undefined)
 })

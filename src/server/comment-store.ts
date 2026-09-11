@@ -35,6 +35,20 @@ export const clearRemoved = (
   commentId: string,
 ): Promise<void> => counting.clearRemoved(db, postId, commentId)
 
+export const refreshTopLevel = (
+  postId: string,
+  commentId: string,
+  author: string,
+): Promise<boolean> => counting.refreshTopLevel(db, postId, commentId, author)
+
+export const refreshReply = (
+  postId: string,
+  commentId: string,
+  author: string,
+  substantive: boolean,
+): Promise<boolean> =>
+  counting.refreshReply(db, postId, commentId, author, substantive)
+
 export const pruneMissing = (
   postId: string,
   seen: Set<string>,
