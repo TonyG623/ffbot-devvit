@@ -105,3 +105,38 @@ export function parseCommentCreate(raw: unknown): ParsedComment | undefined {
     removed: Boolean(pick(comment, 'deleted', 'spam')),
   }
 }
+
+/** The ids a delete event carries. Shape inferred the same way as above. */
+export type ParsedDelete = {
+  commentId?: string
+  postId?: string
+}
+
+export function parseDelete(raw: unknown): ParsedDelete | undefined {
+  if (typeof raw !== 'object' || raw === null) return undefined
+  const root = raw as Record<string, unknown>
+  const envelope = (pick(root, 'event', 'data') ?? root) as Record<
+    string,
+    unknown
+  >
+
+  // CommentDelete carries flat ids; PostDelete carries a postId. Some payloads
+  // nest the objects instead, so accept either.
+  const comment = pick(envelope, 'comment') as
+    | Record<string, unknown>
+    | undefined
+  const post = pick(envelope, 'post') as Record<string, unknown> | undefined
+
+  const commentId =
+    str(pick(envelope, 'commentId', 'comment_id')) ??
+    (comment ? str(pick(comment, 'id')) : undefined)
+  const postId =
+    str(pick(envelope, 'postId', 'post_id')) ??
+    (post ? str(pick(post, 'id')) : undefined)
+
+  if (!commentId && !postId) return undefined
+  return {
+    ...(commentId ? {commentId: withPrefix(commentId, 't1_')} : {}),
+    ...(postId ? {postId: withPrefix(postId, 't3_')} : {}),
+  }
+}

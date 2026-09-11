@@ -16,6 +16,7 @@ import assert from 'node:assert/strict'
 import {readFileSync} from 'node:fs'
 import {test} from 'node:test'
 import {
+  forgetComment,
   type IncomingComment,
   isSeeded,
   markSeeded,
@@ -632,4 +633,102 @@ test('an edit across the 20-character line is applied both ways', async () => {
   state = await readThreadState(db, POST)
   assert.equal(state.allCount['helper'], 1)
   assert.equal(state.helpCount['helper'], undefined)
+})
+
+// ------------------------------------------------- Devvit Rules compliance
+
+test('COMPLIANCE: deleting a comment erases its author from Redis', async () => {
+  // Devvit Rules, "Enable and respect user deletions": on a CommentDelete
+  // trigger, all content related to the comment must be deleted from the app,
+  // explicitly including data in Redis. This app stores usernames in its
+  // counters and an author plus permalink per top-level comment.
+  const db = fakeRedis()
+  await trackPost(db, POST)
+  await recordComment(db, {
+    postId: POST,
+    permalink: '/r/x/comments/abc/comment/top/',
+    commentId: 't1_top',
+    parentId: POST,
+    author: 'someone',
+    body: 'a question',
+    createdAtMs: 1_700_000_000_000,
+  })
+
+  assert.equal(await forgetComment(db, POST, 't1_top'), 'top-level')
+
+  // Nothing anywhere in the store may still name them or link to the comment.
+  const dumped = JSON.stringify(db.dump())
+  assert.doesNotMatch(dumped, /someone/, 'author name must be gone')
+  assert.doesNotMatch(dumped, /comments\/abc/, 'permalink must be gone')
+
+  const state = await readThreadState(db, POST)
+  assert.equal(state.topLevelSeen, 0)
+  assert.deepEqual(state.unanswered, [])
+})
+
+test('COMPLIANCE: deleting a reply erases the author and its credit', async () => {
+  const db = fakeRedis()
+  await trackPost(db, POST)
+  const base = {postId: POST, permalink: '/c/x', createdAtMs: 1_700_000_000_000}
+  await recordComment(db, {
+    ...base,
+    commentId: 't1_top',
+    parentId: POST,
+    author: 'asker',
+    body: 'q',
+  })
+  await recordComment(db, {
+    ...base,
+    commentId: 't1_r',
+    parentId: 't1_top',
+    author: 'answerer',
+    body: 'a substantive answer worth crediting',
+  })
+  assert.equal((await readThreadState(db, POST)).allCount['answerer'], 1)
+
+  assert.equal(await forgetComment(db, POST, 't1_r'), 'reply')
+
+  const state = await readThreadState(db, POST)
+  assert.equal(state.allCount['answerer'], undefined, 'credit reversed')
+  assert.equal(state.helpCount['answerer'], undefined)
+  assert.doesNotMatch(JSON.stringify(db.dump()), /answerer/)
+  // The parent survives, and is unanswered again now its only answer is gone.
+  assert.deepEqual(
+    state.unanswered.map(r => r.author),
+    ['asker'],
+  )
+})
+
+test('COMPLIANCE: a re-delivered delete does not double-decrement', async () => {
+  const db = fakeRedis()
+  await trackPost(db, POST)
+  const base = {postId: POST, permalink: '/c/x', createdAtMs: 1_700_000_000_000}
+  await recordComment(db, {
+    ...base,
+    commentId: 't1_top',
+    parentId: POST,
+    author: 'asker',
+    body: 'q',
+  })
+  await recordComment(db, {
+    ...base,
+    commentId: 't1_a',
+    parentId: 't1_top',
+    author: 'helper',
+    body: 'first substantive answer here',
+  })
+  await recordComment(db, {
+    ...base,
+    commentId: 't1_b',
+    parentId: 't1_top',
+    author: 'helper',
+    body: 'second substantive answer here',
+  })
+  assert.equal((await readThreadState(db, POST)).allCount['helper'], 2)
+
+  await forgetComment(db, POST, 't1_a')
+  assert.equal(await forgetComment(db, POST, 't1_a'), 'unknown')
+
+  // One delete, one decrement.
+  assert.equal((await readThreadState(db, POST)).allCount['helper'], 1)
 })

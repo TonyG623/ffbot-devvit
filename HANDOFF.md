@@ -420,12 +420,55 @@ and the trigger path has only been observed handling single-digit comment
 volumes. The rate-limit measurements in item 1 are real; the claim that the
 trigger design holds at season volume is reasoned, not observed.
 
-**Devvit Rules: NOT VERIFIED.** The modmail links rules that must be followed
-and neither developers.reddit.com nor reddit.com is reachable from the coding
-session, so they were never read. Things worth checking by hand against them:
-the app account posting ~14 threads a day and editing each every 15 minutes,
-the modmail alerts on config breakage, and reading another subreddit's content
-(which the removed benchmark did, but the shipped code does not).
+## Devvit Rules: AUDITED 2026-09-10
+
+The rules are at `developers.reddit.com/docs/devvit_rules`. The WebFetch tool is
+blocked from that host but **plain `curl` reaches it**, which is how they were
+finally read — worth knowing next time.
+
+Two rules bit. Both are fixed:
+
+- **Deletion handling was non-compliant.** "On PostDelete and CommentDelete
+  event triggers, you must delete all content related to the post and/or comment
+  ... from your app. This includes data that is in the Redis/KVstore." This app
+  stores usernames in its counters plus an author and permalink per top-level
+  comment, and it subscribed to NO delete triggers. The reconciliation walk
+  pruned vanished comments eventually, but it visits one thread per cycle, which
+  is nowhere near prompt enough for a deletion request. `onCommentDelete` and
+  `onPostDelete` are now wired to `forgetComment` / `clearThreadState`.
+
+- **The README would have been rejected.** "Apps submitted with a missing,
+  empty, default template README, or vague README will be rejected." The old one
+  opened with "This has never run against Reddit" and "17 unit tests" — both
+  false by then — and was written for a developer. Rewritten for a non-developer
+  moderator audience: what it does, who it is for, how to configure every
+  setting, how to install it, what it stores and for how long, and a support
+  contact.
+
+Checked and already compliant:
+
+- No HTTP Fetch, no external services, no `http` permission — so no terms of
+  service or privacy policy is required, and no domain approval.
+- Never posts or comments on behalf of a user, so none of the "User action
+  requirements" apply. Threads are authored by the app account.
+- No linking out, no Reddit trademarks, no third-party IP, no restricted
+  categories.
+- Data minimisation: stores usernames, permalinks and counts. **No comment
+  text.** Redis keys expire after 3 days, against the rules' recommended 30.
+- Modmail is one message per state change, not one per cycle, so it is not
+  "frequently sending unsolicited messages".
+
+**Two things to carry forward:**
+
+1. **Every publish needs a fresh review.** "You are required to resubmit your
+   app for Reddit app review every time you publish changes to it." Unchanged
+   functionality gets a streamlined review.
+2. **Attribution changes on approval.** "Until your app is approved by Reddit,
+   new content from your app will be posted from your Devvit app account. If
+   your app is approved, then submitPost will post on behalf of the content
+   author." FFBot authors its own threads, so there is no content author and
+   nothing should change — but confirm the threads still come from u/ffbot-app
+   after approval rather than from u/tonyg623.
 
 ### Facts for the Port Submission form
 

@@ -24,7 +24,9 @@
     }
   },
   "triggers": {
-    "onCommentCreate": "/internal/triggers/comment-create"
+    "onCommentCreate": "/internal/triggers/comment-create",
+    "onCommentDelete": "/internal/triggers/comment-delete",
+    "onPostDelete": "/internal/triggers/post-delete"
   },
   "menu": {
     "items": [

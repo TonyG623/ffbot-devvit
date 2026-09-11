@@ -2,7 +2,7 @@ import {once} from 'node:events'
 import type {IncomingMessage, ServerResponse} from 'node:http'
 import type {PartialJsonValue, UiResponse} from '@devvit/web/shared'
 import {buildIndex, processThread, runCycle} from './jobs.ts'
-import {onCommentCreate} from './triggers.ts'
+import {onCommentCreate, onCommentDelete, onPostDelete} from './triggers.ts'
 
 type TaskRequest<T> = {data?: T}
 type TaskResponse = {status: 'ok'}
@@ -60,6 +60,16 @@ async function route(
     case '/internal/triggers/comment-create': {
       const raw = await readJson<unknown>(reqMsg)
       await onCommentCreate(raw)
+      writeJson<TaskResponse>(200, {status: 'ok'}, rspMsg)
+      return
+    }
+    case '/internal/triggers/comment-delete': {
+      await onCommentDelete(await readJson<unknown>(reqMsg))
+      writeJson<TaskResponse>(200, {status: 'ok'}, rspMsg)
+      return
+    }
+    case '/internal/triggers/post-delete': {
+      await onPostDelete(await readJson<unknown>(reqMsg))
       writeJson<TaskResponse>(200, {status: 'ok'}, rspMsg)
       return
     }

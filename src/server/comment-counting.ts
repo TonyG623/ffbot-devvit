@@ -86,6 +86,14 @@ export async function trackPost(db: RedisLike, postId: string): Promise<void> {
   await db.expire(keyTracked(postId), TTL_SECONDS)
 }
 
+/** Stop counting a post, and forget that it was ever tracked. */
+export async function untrackPost(
+  db: RedisLike,
+  postId: string,
+): Promise<void> {
+  await db.del(keyTracked(postId))
+}
+
 export async function isTracked(
   db: RedisLike,
   postId: string,
@@ -276,6 +284,62 @@ async function drainPending(
     rescued++
   }
   return rescued
+}
+
+/**
+ * Erase everything stored about one comment.
+ *
+ * REQUIRED BY THE DEVVIT RULES, not an optimisation. "On PostDelete and
+ * CommentDelete event triggers, you must delete all content related to the post
+ * and/or comment ... from your app. This includes data that is in the
+ * Redis/KVstore." This app stores author-identifying information -- usernames
+ * in the counters, and the author plus a permalink in the top-level facts -- so
+ * a deletion has to reach Redis promptly, not eventually.
+ *
+ * The rules allow retaining bare metadata like a comment id, but nothing here
+ * needs it once the comment is gone, so everything goes.
+ *
+ * Returns what was forgotten, for logging.
+ */
+export async function forgetComment(
+  db: RedisLike,
+  postId: string,
+  commentId: string,
+): Promise<'top-level' | 'reply' | 'unknown'> {
+  // A reply: reverse its contribution before dropping the record, or the
+  // author keeps credit for a comment that no longer exists.
+  const replyRaw = await db.hGet(keyReplies(postId), commentId)
+  if (replyRaw) {
+    try {
+      const rec = JSON.parse(replyRaw) as {p: string; a: string; s: number}
+      if (rec.s === 1) await db.hIncrBy(keySubReplies(postId), rec.p, -1)
+      if (isRealAuthor(rec.a)) {
+        await db.hIncrBy(keyAll(postId), rec.a, -1)
+        if (rec.s === 1) await db.hIncrBy(keyHelp(postId), rec.a, -1)
+      }
+    } catch {
+      // Unparseable record; dropping it is still the right outcome.
+    }
+    await db.hDel(keyReplies(postId), [commentId])
+    await db.hDel(keySeen(postId), [commentId])
+    await db.hDel(keyPending(postId), [commentId])
+    return 'reply'
+  }
+
+  const factsRaw = await db.hGet(keyFacts(postId), commentId)
+  if (factsRaw) {
+    // Drops the stored author name and permalink along with the entry.
+    await db.hDel(keyFacts(postId), [commentId])
+    await db.hDel(keySubReplies(postId), [commentId])
+    await db.hDel(keyRemoved(postId), [commentId])
+    await db.hDel(keySeen(postId), [commentId])
+    return 'top-level'
+  }
+
+  // Not a comment we were counting, but clear any stash keyed by it anyway.
+  await db.hDel(keyPending(postId), [commentId])
+  await db.hDel(keySeen(postId), [commentId])
+  return 'unknown'
 }
 
 /**

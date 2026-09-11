@@ -3,8 +3,14 @@
  * comment posted to the subreddit, so it stays cheap and never touches the
  * Reddit API — the payload already carries everything the counters need.
  */
-import {isTracked, recordComment} from './comment-store.ts'
-import {parseCommentCreate} from './trigger-payload.ts'
+import {
+  clearThreadState,
+  forgetComment,
+  isTracked,
+  recordComment,
+  untrackPost,
+} from './comment-store.ts'
+import {parseCommentCreate, parseDelete} from './trigger-payload.ts'
 
 /**
  * The wire format is inferred from the protobufs rather than contracted by the
@@ -40,4 +46,42 @@ export async function onCommentCreate(raw: unknown): Promise<void> {
       `COUNTED ${kind} ${parsed.commentId} on ${parsed.postId} by ${parsed.author}`,
     )
   }
+}
+
+/**
+ * REQUIRED BY THE DEVVIT RULES. "On PostDelete and CommentDelete event
+ * triggers, you must delete all content related to the post and/or comment ...
+ * from your app. This includes data that is in the Redis/KVstore."
+ *
+ * This app stores usernames in its counters and an author plus permalink per
+ * top-level comment, so a deletion has to reach Redis promptly. The
+ * reconciliation walk also prunes vanished comments, but it only visits one
+ * thread per cycle -- far too slow to rely on for a deletion request.
+ */
+export async function onCommentDelete(raw: unknown): Promise<void> {
+  const parsed = parseDelete(raw)
+  if (!parsed?.commentId || !parsed.postId) {
+    console.warn('WARN: could not parse comment-delete payload; ignoring')
+    return
+  }
+  if (!(await isTracked(parsed.postId))) return
+
+  const what = await forgetComment(parsed.postId, parsed.commentId)
+  console.log(
+    `FORGOT ${what} ${parsed.commentId} on ${parsed.postId} (deleted)`,
+  )
+}
+
+/** Same requirement, for a whole post: drop everything stored about it. */
+export async function onPostDelete(raw: unknown): Promise<void> {
+  const parsed = parseDelete(raw)
+  if (!parsed?.postId) {
+    console.warn('WARN: could not parse post-delete payload; ignoring')
+    return
+  }
+  if (!(await isTracked(parsed.postId))) return
+
+  await clearThreadState(parsed.postId)
+  await untrackPost(parsed.postId)
+  console.log(`FORGOT everything stored for ${parsed.postId} (post deleted)`)
 }

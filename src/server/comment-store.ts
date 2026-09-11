@@ -35,6 +35,15 @@ export const clearRemoved = (
   commentId: string,
 ): Promise<void> => counting.clearRemoved(db, postId, commentId)
 
+export const forgetComment = (
+  postId: string,
+  commentId: string,
+): Promise<'top-level' | 'reply' | 'unknown'> =>
+  counting.forgetComment(db, postId, commentId)
+
+export const untrackPost = (postId: string): Promise<void> =>
+  counting.untrackPost(db, postId)
+
 export const refreshTopLevel = (
   postId: string,
   commentId: string,

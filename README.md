@@ -1,139 +1,185 @@
-# FFBot — Devvit port
+# FFBot
 
-A TypeScript port of FFBot (`FFBotPrivate`) onto Reddit's Developer Platform,
-for the App Migration Program.
+FFBot runs a subreddit's daily discussion threads. It posts them on a schedule,
+keeps them organised, and — the part people actually notice — nudges the
+community to answer questions that nobody has replied to yet.
 
-## Status — read this first
+It has run r/fantasyfootball's daily threads for years. This is that bot,
+rebuilt to run on Reddit's Developer Platform.
 
-**This has never run against Reddit.** It was written from the source Python and
-the official Devvit 0.14.2 docs, and it has never been uploaded, installed, or
-playtested. Treat every behaviour below as a claim to be verified, not a fact.
+## What it does
 
-What *is* verified:
+Every day, FFBot posts a set of discussion threads defined by the moderators —
+on r/fantasyfootball that's around fourteen of them, things like
+"Official: [Trade]" and "Official: [Who Do I Start?]". Each thread has a title,
+a flair, and an opening post written by the mods.
 
-| Check | Result |
+Then, every fifteen minutes, it updates each thread with two tables:
+
+- **Who has helped the most people in this thread.** A leaderboard of the users
+  writing the most replies.
+- **Questions nobody has answered yet.** Every top-level comment with fewer than
+  two substantial replies, linked directly, sorted so that people who have
+  helped others appear at the top.
+
+That second table is the point of the bot. A daily thread with hundreds of
+comments buries the people who asked late or asked quietly. The table pulls them
+back out, and sorting it by who has helped others rewards people for answering
+rather than only asking.
+
+It also posts a stickied **Index** thread linking every thread for the day, so
+the community has one place to start.
+
+A reply only counts as "answering" a question if it is longer than 20
+characters. Short replies still count toward the leaderboard, but they do not
+clear a question off the unanswered list — otherwise a one-word reply would hide
+someone who still needs help.
+
+## Who it is for
+
+Moderators of large discussion subreddits that run recurring daily threads and
+want them posted, organised, and kept useful without anyone doing it by hand.
+
+## Configuring it
+
+**Everything is configured on your subreddit's wiki. There is nothing to
+redeploy and no code to edit.** Changes take effect on the next cycle, within
+fifteen minutes.
+
+### 1. The main config page
+
+Create a wiki page at `r/<yoursubreddit>/wiki/ffbot` containing YAML. It can be
+inside a fenced code block or indented by four spaces, so the page stays
+readable to humans.
+
+```yaml
+subreddit: yoursubreddit
+posts_per_day: 1
+index: true
+news_and_discussion: false
+show_percents: false
+wdis_replace: true
+
+threads:
+  - title:      "Trade"
+    flair_text: "Daily Thread"
+    flair_css:  "daily"
+    wiki:       "trade"
+    sticky:     true
+
+  - title:      "Monday Miracle"
+    wiki:       "monday"
+    flair_text: "Daily Thread"
+    flair_css:  "daily"
+    day:        "monday"
+```
+
+Global settings:
+
+| Setting | What it does |
 | --- | --- |
-| `tsc --build` against real `@devvit/web` types | passes |
-| 17 unit tests over the pure logic | pass |
-| `esbuild` bundle to CJS | succeeds |
-| Config parse of the real seeded wiki page | 21 threads, 1 enabled, globals correct |
+| `subreddit` | The subreddit to post in |
+| `posts_per_day` | `1`, `2` or `3`. Above 1, titles gain a Morning/Afternoon/Evening label so each day's threads stay distinct |
+| `index` | Post the stickied Index thread linking all of the day's threads |
+| `news_and_discussion` | Also post a "News and Discussions" round-up of recent flaired posts |
+| `show_percents` | Show "N% of users have been helped in this thread" under the table |
+| `wdis_replace` | In any thread whose body page is `wdis`, replace `<REPLACE>` with the position from the title, so one page serves every "Who Do I Start?" thread |
 
-See `RUN.md` for the playtest checklist and pre-generated wiki page content.
+Per-thread settings:
 
-What is **not** verified: every call that touches Reddit. Whether the app has the
-permissions it needs, whether a comment walk fits in the execution budget on a
-real thread, whether flair CSS classes apply, whether the sticky slots behave.
-That is what playtest is for.
+| Setting | What it does |
+| --- | --- |
+| `title` | Goes into the title as `Official: [title] - Day Date` |
+| `flair_text` | Post flair. Must match an existing flair template on your subreddit |
+| `flair_css` | Flair CSS class, used only if no flair template matches |
+| `wiki` | Which body page to use, at `r/<sub>/wiki/ffbot/<name>` |
+| `day` | Optional. Only post on this weekday, e.g. `monday` |
+| `sticky` | Optional. Pin to the second sticky slot |
+| `no_table` | Optional. Skip the tables for this thread |
+| `enabled` | Optional. Set `false` to keep the entry but stop posting it |
 
-## Run it
+### 2. A body page per thread
 
-Needs Node 24.18.0+ (`.nvmrc` pins it; this port was type-checked on Node 22, so
-run `npm test` again on 24 before trusting it).
+For each thread, create `r/<yoursubreddit>/wiki/ffbot/<wiki>` holding the
+opening post. If the page is missing the thread still posts, with the body
+`No Wiki Found`, so a typo is visible rather than silently breaking the day.
+
+If `index` is on, also create `r/<yoursubreddit>/wiki/ffbot/index` for the text
+at the top of the Index thread.
+
+### 3. Flair
+
+If your subreddit requires post flair, make sure a flair template exists whose
+text matches each `flair_text`. FFBot applies flair as it submits, because a
+subreddit that requires flair will otherwise reject the post outright.
+
+### If the config breaks
+
+If the wiki page stops parsing — a stray character in the YAML, usually — FFBot
+keeps posting from the last configuration that worked and sends the mod team one
+modmail explaining what broke. It sends **one** message per change of state, not
+one every fifteen minutes. When the page is fixed, it sends a single "restored"
+message.
+
+## Installing it
+
+1. Install the app on your subreddit. You must be a moderator.
+2. Create the wiki pages described above.
+3. Wait for the next cycle, or use the moderator menu item
+   **[FFBot] Run cycle now** from the subreddit's three-dot menu to start one
+   immediately.
+
+Threads are posted by the app's own account, not by a moderator account.
+
+Optional settings are available in the app's configuration screen for the
+timezone used to date threads, the hour the date rolls over, and a fallback
+posts-per-day used only when the wiki does not specify one.
+
+## Interacting with it
+
+There is nothing for ordinary users to do — they comment on the threads as
+normal and the tables update around them.
+
+For moderators:
+
+- **[FFBot] Run cycle now** — post or refresh today's threads immediately
+  instead of waiting for the next fifteen-minute cycle.
+- **Edit the wiki config** — change which threads post, their titles, flair, and
+  bodies. Live within fifteen minutes.
+
+## What it stores, and for how long
+
+FFBot keeps running counts so it does not have to re-read an entire thread every
+fifteen minutes, which on a busy day is not possible within the platform's
+limits. For each thread it stores the commenters' usernames, a link to each
+top-level comment, and reply counts. It does not store comment text.
+
+Everything expires automatically after three days.
+
+If a comment is deleted, FFBot removes what it stored about that comment
+immediately, including the author's username. If a post is deleted, it removes
+everything stored about that post. Deleted accounts stop being named on the
+tables once the thread is next reconciled.
+
+## Support
+
+Problems, questions, or anything the bot gets wrong: message the moderators of
+the subreddit it is running on, or open an issue at
+https://github.com/TonyG623/ffbot-devvit/issues
+
+## For developers
 
 ```bash
 npm install
-npm run test        # types + unit tests + bundle
-npx devvit login
-npx devvit playtest r/ffbottest
+npm test        # lint + types + unit tests + bundle
+npx devvit playtest r/yourtestsub
 ```
 
-`playtest` installs the app on the subreddit and streams logs. The cron runs
-every 15 minutes; use the moderator menu item **[FFBot] Run cycle now** to
-trigger a cycle immediately instead of waiting.
+The counting rules are in `src/server/comment-counting.ts` and are the part
+worth understanding. Counts are maintained incrementally from comment triggers
+rather than by walking threads, because the Reddit API is rate limited to around
+four requests per second and a full walk of a 500-comment thread does not fit in
+a job's execution budget. A bounded reconciliation walk repairs drift.
 
-Before the first run, create the config wiki page at `r/ffbottest/wiki/ffbot`
-holding the YAML from `fantasyfootball.yaml`, plus one `r/ffbottest/wiki/ffbot/<name>`
-page per `wiki:` key referenced by the threads, and `r/ffbottest/wiki/ffbot/index`.
-
-## The one design decision that matters
-
-**Devvit jobs get 30 seconds.** The Python ran as a single long process on a
-droplet: load config, post threads, walk every comment of every thread, edit
-everything, `time.sleep(10)` between edits. That shape cannot survive a 30-second
-ceiling on r/fantasyfootball-sized threads.
-
-So the run is split into phases that each re-enter through the scheduler, with
-state in Redis instead of memory:
-
-```
-cycle (cron */15)  ensure today's threads exist        -> chain
-  walk   (1 job per thread)  read comments into a Redis accumulator
-  render (1 job per thread)  edit the thread body from the accumulator
-  index  (1 job)             build + post/edit the stickied Index thread
-```
-
-`walk` carries a 20-second budget. If a thread's comments don't fit, it saves
-progress and re-schedules itself with a skip offset.
-
-**This is the part most likely to be wrong.** Resuming re-reads the skipped pages,
-so a thread that needs many passes burns API calls quadratically. Measure it on a
-real thread first. If daily threads routinely need more than one or two passes,
-the answer is not a bigger budget — it's to stop re-walking entirely and maintain
-the counters incrementally from an `onCommentCreate` trigger, so the cron job only
-renders what Redis already knows. The trigger endpoint is declared and stubbed at
-`/internal/triggers/comment-create` for exactly that.
-
-## Deliberate differences from the Python
-
-1. **No credentials.** Devvit authenticates apps automatically — there is no
-   `client_id`, `client_secret`, or bot password anywhere in this port. The
-   hardcoded credentials in `post_daily_threads.py` have no equivalent here.
-   (Rotate them anyway — they're in the old repo's git history.)
-
-2. **The overall leaderboard bug is fixed.** In the Python,
-   `calculate_overall_leader_index` builds its table from a `defaultdict(int)`
-   that is created empty and never populated, so it always renders as a bare
-   header with no rows. `overallLeaderTable()` here takes the real cross-thread
-   counts. **If you want byte-identical output, pass `{}`.** Decide which you
-   want before submitting the port.
-
-3. **Both reply counters are preserved.** The Python keeps two counts that are
-   easy to mistake for one: length-filtered replies (`len(body) > 20`) drive the
-   "# Helped in thread" column, and unfiltered replies drive the leaderboards
-   and "# Helped in all threads". Collapsing them would change published
-   numbers, so `comments.ts` tracks both.
-
-4. **Timezone, posts-per-day and rollover hour are subreddit settings**, not
-   `pytz.timezone('US/Central')` hardcoded in the module body.
-
-5. **State moved** from `/opt/ffbot/state/*.json` to Redis. The wiki-config
-   fallback and the "config broken / config restored" modmail alerts behave the
-   same, including only alerting once per state change.
-
-## Known gaps
-
-- `common.pyc` and the `fantasybball.yaml` / `fantasyhockey.yaml` configs were
-  not ported; this targets one subreddit per installation, which is how Devvit
-  apps are scoped. Multi-sport means installing the app per subreddit with
-  different wiki configs.
-- The Python's `replace_more(limit=None)` has no direct equivalent. Devvit's
-  `Listing` paginates on its own; whether it reaches every comment on a large
-  thread is unverified.
-- Flair is set via `reddit.setPostFlair` with the config's `css_class`. The
-  `fantasyfootball.yaml` has `flair_css: "Daily Thread"` on the Playoff Fantasy
-  entry where every other entry uses `daily` — looks like a typo in the original,
-  carried over as-is.
-- No retry/backoff around Reddit calls. The Python had none either, but a
-  droplet retried on the next cron tick; here a thrown job just fails.
-
-## Layout
-
-```
-devvit.json           app config: permissions, scheduler tasks, settings, menu
-src/shared/types.ts   config + accumulator types
-src/server/
-  index.ts            server entry
-  server.ts           routes /internal/* endpoints to jobs
-  jobs.ts             cycle / walk / render / index phases
-  comments.ts         comment walking, the two reply counters
-  tables.ts           markdown table builders (pure)
-  dates.ts            thread date, zone, days-since-monday (pure)
-  config.ts           wiki config load, cache fallback, modmail alerts
-  state.ts            Redis accessors
-  yaml-extract.ts     port of _extract_yaml (pure)
-  ffbot.test.ts       unit tests for the pure logic
-```
-
-The pure modules (`tables`, `dates`, `yaml-extract`) hold the logic that was
-worth testing without a Reddit connection — the string formats and sort orders
-where a silent difference would quietly change what gets published.
+`HANDOFF.md` documents the measurements behind that decision, the counting rules
+in detail, and the gotchas worth knowing before changing anything.
