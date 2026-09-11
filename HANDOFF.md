@@ -379,7 +379,7 @@ form, so the form is not the end of the wait.
 |---|---|---|
 | 1 | Enroll the app in the Migration Portal | **DONE** - portal shows FFBot "Registered / Applied for bounty" |
 | 2 | Complete Reddit Earn onboarding | **DONE** - Earn page shows "You're enrolled!" |
-| 3 | App running on Developer Platform | Partly: playtest only, never published |
+| 3 | App running on Developer Platform | **DONE** - published unlisted as v0.0.2 on 2026-09-10 |
 | 4 | Test the app | Largely done; see gaps below |
 | 5 | File the Port Submission form | **NOT DONE - must be last** |
 
@@ -387,16 +387,27 @@ Steps 1 and 2 were confirmed done on 2026-09-10 from the portal and Earn
 screenshots. That clears the critical path: Earn onboarding was the one item
 with external turnaround that could not be rushed at the end.
 
-Step 5 still requires signing in as tonyg623 and cannot be done from a coding
-session. **What remains is step 3 (publish) and step 5 (the form).**
+**Only step 5 remains: the Port Submission form.** It requires signing in as
+tonyg623 and cannot be done from a coding session. The facts it will ask for
+are collected below.
 
-**Step 3 needs `devvit publish`, which has never been run.** `devvit list
-installs` shows only `ffbottest (v0.0.1.94)` from playtest plus the
-`ffbot_app_dev` scaffold. Playtest versions are ephemeral and are not a
-published app. Note that `devvit publish` **uploads the source for Reddit to
-review** — which is why the bench/self-test scaffolding was removed first.
-Default is unlisted; `--public` submits for public review. Unlisted is almost
-certainly what this needs, since the app is for one subreddit.
+**Step 3 done 2026-09-10: published as v0.0.2, unlisted.**
+`https://developers.reddit.com/apps/ffbot-app`. Unlisted means installable by
+any subreddit tonyg623 moderates, without appearing in the public app
+directory, which is what a single-community app wants. `--public` would submit
+it for public directory review instead; do not use it.
+
+`devvit publish` uploads the source for Reddit to review, so the bench and
+self-test scaffolding being removed beforehand mattered.
+
+Note the publish prompt: it asks for consent to upload the source zip under the
+Developer Terms, and it is the only interactive gate in the flow.
+`DEVVIT_ALLOW_SOURCE_UPLOAD=1` in the environment answers it. Picking the
+"don't ask me again" option writes that same variable into `.env` permanently —
+passing it per-command instead keeps the consent explicit each time.
+
+**Re-publishing after further changes:** run `npx devvit publish` again. It
+auto-bumps the patch version. `--withdraw` pulls a pending publish request.
 
 **Step 3, fetch plugin: not needed.** The port makes no external network calls
 and declares no `http` permission — only `reddit` (moderator scope) and
