@@ -148,11 +148,26 @@ it? To settle it, comment on an r/ffbottest daily thread from a normal account,
 delete the comment, and watch for `FORGOT top-level …`. The log line includes
 `source=` and `reason=` to confirm provenance.
 
-If it turns out not to fire at all, the fallback is the reconciliation walk,
-which already prunes vanished comments and refreshes tombstoned authors (both
-verified live) — but it visits one thread per cycle, so it is slower than the
-rules intend, and the submission should say so rather than claim a trigger path
-that does not fire.
+**The fallback is VERIFIED LIVE (2026-09-10).** After a comment was deleted from
+Reddit, the reconciliation walk logged `PRUNED 1 vanished entries` and the next
+render showed all three mechanisms working together:
+
+```
+before:  3 top-level, 1 unanswered rows (1 counted), body 1537 chars
+after:   2 top-level, 0 unanswered rows (2 counted), body  947 chars
+```
+
+- `pruneMissing` dropped the deleted comment, 3 -> 2 top-level
+- `refreshTopLevel` tombstoned two older comments' authors, so they lost their
+  rows, 1 -> 0
+- `unansweredTotal` stayed at 2 while rows went to 0 — the Python's behaviour of
+  counting deleted-author comments toward "% helped" while never listing them
+
+So deleted users' data IS removed and deleted authors ARE dropped from the
+tables, on a rotation of one thread per cycle. That is slower than the trigger
+path the rules point at, but it is a real, working mechanism rather than a
+claim. Describe it that way in the submission until a delete trigger is
+actually observed.
 
 ## Verified live on r/ffbottest
 
