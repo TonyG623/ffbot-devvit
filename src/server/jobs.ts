@@ -82,11 +82,41 @@ async function readSettings(): Promise<{
 }
 
 /** Port of get_current_threads: this app account's recent posts. */
+/**
+ * The username the app actually posts under.
+ *
+ * NOT `context.appSlug`. The slug is the app's name ("ffbot-app"); the account
+ * it posts as can differ, and does whenever a Data API bot account has been
+ * migrated into the app account — the app keeps its slug but posts as the old
+ * bot's username. Comparing authorName against the slug then never matches,
+ * the app cannot find its own threads, and it re-posts the whole daily set on
+ * EVERY cycle instead of de-duplicating.
+ *
+ * Falls back to the slug if the lookup fails, which is the correct answer for
+ * an app whose account was never migrated.
+ */
+let appAccountCache: string | undefined
+
+async function appAccountName(): Promise<string> {
+  if (appAccountCache) return appAccountCache
+  try {
+    const user = await reddit.getAppUser()
+    if (user?.username) {
+      appAccountCache = user.username
+      console.log(`App posts as u/${appAccountCache}`)
+      return appAccountCache
+    }
+  } catch (err) {
+    console.warn(`WARN: could not resolve app account: ${String(err)}`)
+  }
+  return context.appSlug ?? ''
+}
+
 async function currentBotPosts(
   sub: string,
   limit = 200,
 ): Promise<{id: string; title: string; stickied: boolean}[]> {
-  const me = context.appSlug
+  const me = await appAccountName()
   const seen = new Map<string, {id: string; title: string; stickied: boolean}>()
   for (const listing of [
     reddit.getHotPosts({subredditName: sub, limit, pageSize: 100}),
