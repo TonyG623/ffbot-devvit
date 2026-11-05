@@ -414,6 +414,35 @@ a bug in the app.
   which you want before submitting the port.
 - Devvit apps need no credentials at all. Auth is automatic.
 
+## CUTOVER HAPPENED 2026-11-05
+
+The droplet was stopped by Tony, then `npx devvit install fantasyfootball`
+installed **v0.0.4**. The first cycle did not fire at the next */15 tick — the
+scheduler took a couple of ticks to register after install — and then it posted.
+Do not panic next time if nothing happens on the first tick after an install.
+
+**Today's set is duplicated on purpose.** The old bot had already posted
+2026-11-05's threads as u/FFBot before it was stopped, and the port finds its
+own threads by matching author, so it could not see them and posted its own.
+Tony accepted the duplication rather than delay the cutover. From 11-06 the port
+sees its own threads and de-duplicates normally — this was a one-time cost of
+cutting over mid-day.
+
+### `devvit logs` DOES NOT WORK for production installs
+
+`npx devvit logs fantasyfootball` returns `No installation found for ffbot-app
+at fantasyfootball` even though `devvit list installs` shows
+`fantasyfootball (v0.0.4)`. The CLI resolves the installation through
+DevPortal's `GetByAppNameAndInstallLocation` (`logs.js:58`), and that lookup
+fails for this install; the same command also fails for r/ffbottest now that no
+playtest is running. **`devvit logs` appears to work only while a playtest
+session is active.**
+
+That means there is NO CLI visibility into production. Monitoring has to come
+from the developer portal's own logs view at
+`developers.reddit.com/apps/ffbot-app`, or from looking at the subreddit. Plan
+debugging around that — a coding session cannot see what the app is doing.
+
 ## Production cutover notes
 
 - Threads will be authored by **u/ffbot-app**, not u/FFBot. Devvit apps run as
