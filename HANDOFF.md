@@ -414,6 +414,51 @@ a bug in the app.
   which you want before submitting the port.
 - Devvit apps need no credentials at all. Auth is automatic.
 
+## STATE AS OF 2026-11-05 EVENING
+
+Live on r/fantasyfootball, **v0.0.6**, healthy. Zero errors, zero 429s across
+the whole afternoon's logs.
+
+**What is now verified in production**, not just on a test subreddit:
+
+- De-duplication: 11 `ALREADY SUBMITTED, USING:` per cycle, no re-posting
+- The trigger path counting live comments with no Reddit API call
+  (`COUNTED top-level t1_... on t3_... by <user>`)
+- Rendering real tables with real users, e.g. `48 top-level, 35 unanswered
+  rows, top helper MellyMel86=5`
+- **The budget-and-resume mechanism at volume.** A 256-comment thread
+  (120 top-level, 136 replies) hit the 20s budget, logged `PARTIAL`, chained
+  with a skip offset, and finished the remaining 11 comments on the next job.
+  This is what the whole September redesign was for and it had never run at
+  real volume until today.
+
+### Open, and worth checking
+
+**Does newest-wins actually pick the newest?** The switchover selected the
+`1xoqd*` set, but a duplicate at `1xoquc3` appears to be NEWER (Reddit ids are
+base36 and increase over time, so `1xoqu…` > `1xoqd…`). Either some copies are
+not visible to the hot/new listings `currentBotPosts` reads, or `createdAtMs`
+ties between copies posted in the same burst and the tie-break falls back to
+first-seen — which is arbitrary, the very thing `newestByTitle` was added to
+remove. Check whether `1xoquc3` ever gets a table. If it does not while another
+copy of the same title does, the determinism fix is incomplete.
+
+**The Index is never re-stickied.** `sticky()` runs only on the submit path
+(`jobs.ts`), so an Index that already exists gets edited and left unpinned.
+It needs one manual sticky on a day like today; a normal day creates a fresh
+Index that pins itself. Worth moving the sticky call onto the edit path before
+a gameday, when a mod shuffling stickies is most likely.
+
+**Sunday is still the real unknown.** Today peaked at 120 top-level comments on
+one thread. Gameday will be several times that. Watch for a `PARTIAL` on the
+same thread that never resolves across cycles, or `RESOURCE_EXHAUSTED`.
+`npx devvit logs r/fantasyfootball` works now that the slug is correct.
+
+**Leftovers on the subreddit:** the morning `1xogv*` threads still carry the
+tables they last received and are no longer updated; the duplicate sets are
+still up. Locking the stale ones consolidates discussion without destroying
+comments.
+
 ## READ THIS FIRST: the account migration renames the app SLUG
 
 The Data API account migration (answered "yes" on the Port Submission form)
