@@ -428,15 +428,43 @@ Tony accepted the duplication rather than delay the cutover. From 11-06 the port
 sees its own threads and de-duplicates normally — this was a one-time cost of
 cutting over mid-day.
 
+### The port cannot unsticky the OLD bot's Index
+
+Seen immediately after cutover: the stickied Index on r/fantasyfootball was
+still u/FFBot's, hours old.
+
+`currentBotPosts` filters to posts whose author is the app account
+(`jobs.ts:96`), and `buildIndex`'s unsticky loop iterates only that list. So the
+port unstickies its own stale Index threads and nothing else. The predecessor's
+stickied Index is invisible to it and stays pinned forever.
+
+**A moderator has to unsticky u/FFBot's Index by hand**, once, at cutover. Same
+category of one-time cleanup as the duplicated threads.
+
+Deliberately NOT fixed in code. Widening the loop to unsticky any post with
+"Index" in the title would reach beyond the app's own posts, and on a subreddit
+this size that could unpin a legitimate mod post whose title happens to contain
+the word. A one-time manual unsticky is the safer trade.
+
 ### `devvit logs` DOES NOT WORK for production installs
 
 `npx devvit logs fantasyfootball` returns `No installation found for ffbot-app
 at fantasyfootball` even though `devvit list installs` shows
 `fantasyfootball (v0.0.4)`. The CLI resolves the installation through
-DevPortal's `GetByAppNameAndInstallLocation` (`logs.js:58`), and that lookup
-fails for this install; the same command also fails for r/ffbottest now that no
-playtest is running. **`devvit logs` appears to work only while a playtest
-session is active.**
+DevPortal's `GetByAppNameAndInstallLocation` (`logs.js:58`), and that lookup fails.
+
+`devvit uninstall` uses the SAME rpc and fails the same way — it refused to
+uninstall from r/ffbottest, claiming no installation existed, while the app was
+demonstrably still posting there. `devvit list installs` uses a different rpc
+(`GetAllWithInstaller`) and works.
+
+So `GetByAppNameAndInstallLocation` is broken platform-side, which breaks BOTH
+`devvit logs` and `devvit uninstall`. An earlier note here guessed the install
+record was stale; that was wrong — the install was live. Uninstalling has to be
+done from Reddit's UI.
+
+Importantly: `devvit logs fantasyfootball` failing is NOT evidence that the
+production install is unhealthy. It is the same broken lookup.
 
 That means there is NO CLI visibility into production. Monitoring has to come
 from the developer portal's own logs view at
