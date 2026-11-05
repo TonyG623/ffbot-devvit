@@ -121,12 +121,42 @@ async function appAccountNames(): Promise<Set<string>> {
   return names
 }
 
-async function currentBotPosts(
-  sub: string,
-  limit = 200,
-): Promise<{id: string; title: string; stickied: boolean}[]> {
+type BotPost = {
+  id: string
+  title: string
+  stickied: boolean
+  createdAtMs: number
+}
+
+/**
+ * Pick ONE post per title, newest first.
+ *
+ * Normally there is exactly one post per title and this is a no-op. It matters
+ * when a title is duplicated — which happened on 2026-11-05, when a slug
+ * mismatch made the app re-post the whole daily set several times. Before
+ * this, selection was `new Map(posts.map(...))`, i.e. last-wins over a
+ * hot-then-new ordering: effectively arbitrary, and free to pick a DIFFERENT
+ * copy on each cycle. That would move the tables and the Index link between
+ * copies from one run to the next.
+ *
+ * Newest-wins was chosen over oldest-wins by Tony. Note the trade: the newest
+ * copy is the one with the LEAST discussion, so on a duplicate day the Index
+ * points at the quieter thread. The real fix for duplicates is removing them;
+ * this only guarantees the choice is stable.
+ */
+function newestByTitle(posts: BotPost[]): Map<string, BotPost> {
+  const byTitle = new Map<string, BotPost>()
+  for (const post of posts) {
+    const prev = byTitle.get(post.title)
+    if (!prev || post.createdAtMs > prev.createdAtMs)
+      byTitle.set(post.title, post)
+  }
+  return byTitle
+}
+
+async function currentBotPosts(sub: string, limit = 200): Promise<BotPost[]> {
   const me = await appAccountNames()
-  const seen = new Map<string, {id: string; title: string; stickied: boolean}>()
+  const seen = new Map<string, BotPost>()
   for (const listing of [
     reddit.getHotPosts({subredditName: sub, limit, pageSize: 100}),
     reddit.getNewPosts({subredditName: sub, limit, pageSize: 100}),
@@ -137,6 +167,7 @@ async function currentBotPosts(
         id: post.id,
         title: post.title,
         stickied: post.stickied,
+        createdAtMs: post.createdAt.getTime(),
       })
     }
   }
@@ -209,7 +240,7 @@ export async function runCycle(): Promise<void> {
   ).trim()
 
   const existing = await currentBotPosts(sub, 1000)
-  const byTitle = new Map(existing.map(p => [p.title, p]))
+  const byTitle = newestByTitle(existing)
 
   const enabled = selectThreads(config.threads, td.dayFull)
 
@@ -567,7 +598,10 @@ export async function buildIndex(): Promise<void> {
   )
 
   const posts = await currentBotPosts(sub, 200)
-  const found = posts.find(p => p.title === title)
+  // Same newest-wins rule as runCycle, so the Index links the copy that is
+  // actually being rendered rather than whichever the listing happened to
+  // return first.
+  const found = newestByTitle(posts).get(title)
 
   for (const post of posts) {
     if (post.title.includes('Index') && !post.title.includes(run.date)) {
@@ -629,7 +663,10 @@ export async function postNewsAndDiscussions(): Promise<string | undefined> {
 
   const title = `News and Discussions - ${run.day} ${run.date}`
   const posts = await currentBotPosts(sub, 200)
-  const found = posts.find(p => p.title === title)
+  // Same newest-wins rule as runCycle, so the Index links the copy that is
+  // actually being rendered rather than whichever the listing happened to
+  // return first.
+  const found = newestByTitle(posts).get(title)
 
   if (found) {
     console.log(`EDITING: ${title}`)
