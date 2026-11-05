@@ -414,6 +414,47 @@ a bug in the app.
   which you want before submitting the port.
 - Devvit apps need no credentials at all. Auth is automatic.
 
+## READ THIS FIRST: the account migration renames the app SLUG
+
+The Data API account migration (answered "yes" on the Port Submission form)
+converted u/FFBot into the app account. It also **renamed the app's slug** from
+`ffbot-app` to `ffbot`, while leaving the DISPLAY NAME as "ffbot-app".
+
+```
+developers.reddit.com/apps/ffbot       -> the app
+developers.reddit.com/apps/ffbot-app   -> nothing
+devvit list apps                       -> shows "ffbot-app" (the display name)
+```
+
+That display name is why this hid for an hour. `list apps` and `list installs`
+looked completely normal.
+
+**One rename caused every problem on cutover day:**
+
+1. **Four CLI commands broke at once** — `publish`, `playtest`, `logs` and
+   `uninstall` all resolve the app by the `name` in `devvit.json`, and that
+   slug no longer existed. The errors are misleading: "No installation found",
+   "Your app doesn't exist yet - run devvit init", "We couldn't find the app".
+   None of them says "that slug is wrong". This was misdiagnosed at the time as
+   a platform-side outage.
+2. **The app re-posted the entire daily set every 15 minutes on
+   r/fantasyfootball.** `currentBotPosts` compared each post's `authorName`
+   against `context.appSlug`. After the rename the slug is `ffbot` and posts
+   are authored by `FFBot` — **differing only in case** — so the comparison
+   never matched, every cron tick decided the day was unposted, and it
+   submitted a fresh set.
+3. **The Index never posted.** Each tick restarted the run and spent its budget
+   re-submitting threads, so the chain never reached the index job.
+
+**If the app is ever renamed again**, `devvit.json`'s `name` must be updated to
+the slug in the app's URL, not its display name. Author matching is now
+defended three ways — both the slug and `reddit.getAppUser()`, compared
+case-insensitively — so a rename alone should no longer cause re-posting.
+
+This is the third identifier-that-looks-like-a-username trap in this port,
+after `comment.author` carrying a `t2_` id and the `[deleted]` sentinel. When
+something here looks like a username, check what it actually holds.
+
 ## CUTOVER HAPPENED 2026-11-05
 
 The droplet was stopped by Tony, then `npx devvit install fantasyfootball`
