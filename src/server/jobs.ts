@@ -83,47 +83,51 @@ async function readSettings(): Promise<{
 
 /** Port of get_current_threads: this app account's recent posts. */
 /**
- * The username the app actually posts under.
+ * Every username this app's own posts can legitimately carry.
  *
- * NOT `context.appSlug`. The slug is the app's name ("ffbot-app"); the account
- * it posts as can differ, and does whenever a Data API bot account has been
- * migrated into the app account — the app keeps its slug but posts as the old
- * bot's username. Comparing authorName against the slug then never matches,
- * the app cannot find its own threads, and it re-posts the whole daily set on
- * EVERY cycle instead of de-duplicating.
+ * NOT just `context.appSlug`. The slug is the app's NAME ("ffbot-app"); the
+ * account it posts as can differ. The Data API account migration moves the old
+ * bot account into the app account, so the app keeps the slug while posting as
+ * u/FFBot. Comparing authorName against the slug then never matches, the app
+ * cannot see its own threads, and every cron tick decides the day is unposted
+ * and submits the whole set again. That happened live on r/fantasyfootball.
  *
- * Falls back to the slug if the lookup fails, which is the correct answer for
- * an app whose account was never migrated.
+ * Both names are accepted rather than picking one, because which is correct
+ * depends on whether the migration has gone through — and that is exactly the
+ * thing this code cannot reliably check from the inside. Accepting both is
+ * right before the migration, after it, and during it. There is no
+ * false-positive risk: both names refer to this app and nobody else can hold
+ * them.
  */
-let appAccountCache: string | undefined
+let appNamesCache: Set<string> | undefined
 
-async function appAccountName(): Promise<string> {
-  if (appAccountCache) return appAccountCache
+async function appAccountNames(): Promise<Set<string>> {
+  if (appNamesCache) return appNamesCache
+  const names = new Set<string>()
+  if (context.appSlug) names.add(context.appSlug)
   try {
     const user = await reddit.getAppUser()
-    if (user?.username) {
-      appAccountCache = user.username
-      console.log(`App posts as u/${appAccountCache}`)
-      return appAccountCache
-    }
+    if (user?.username) names.add(user.username)
   } catch (err) {
     console.warn(`WARN: could not resolve app account: ${String(err)}`)
   }
-  return context.appSlug ?? ''
+  console.log(`App recognises its own posts as: ${[...names].join(', ')}`)
+  appNamesCache = names
+  return names
 }
 
 async function currentBotPosts(
   sub: string,
   limit = 200,
 ): Promise<{id: string; title: string; stickied: boolean}[]> {
-  const me = await appAccountName()
+  const me = await appAccountNames()
   const seen = new Map<string, {id: string; title: string; stickied: boolean}>()
   for (const listing of [
     reddit.getHotPosts({subredditName: sub, limit, pageSize: 100}),
     reddit.getNewPosts({subredditName: sub, limit, pageSize: 100}),
   ]) {
     for (const post of await listing.all()) {
-      if (post.authorName !== me) continue
+      if (!me.has(post.authorName)) continue
       seen.set(post.id, {
         id: post.id,
         title: post.title,
