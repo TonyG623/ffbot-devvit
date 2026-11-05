@@ -98,16 +98,21 @@ async function readSettings(): Promise<{
  * right before the migration, after it, and during it. There is no
  * false-positive risk: both names refer to this app and nobody else can hold
  * them.
+ *
+ * Compared CASE-INSENSITIVELY. The slug and the account differ in case after a
+ * migration — slug "ffbot" against author "FFBot" — and that alone was enough
+ * to make the app miss its own threads on r/fantasyfootball and re-post the
+ * whole daily set every fifteen minutes.
  */
 let appNamesCache: Set<string> | undefined
 
 async function appAccountNames(): Promise<Set<string>> {
   if (appNamesCache) return appNamesCache
   const names = new Set<string>()
-  if (context.appSlug) names.add(context.appSlug)
+  if (context.appSlug) names.add(context.appSlug.toLowerCase())
   try {
     const user = await reddit.getAppUser()
-    if (user?.username) names.add(user.username)
+    if (user?.username) names.add(user.username.toLowerCase())
   } catch (err) {
     console.warn(`WARN: could not resolve app account: ${String(err)}`)
   }
@@ -127,7 +132,7 @@ async function currentBotPosts(
     reddit.getNewPosts({subredditName: sub, limit, pageSize: 100}),
   ]) {
     for (const post of await listing.all()) {
-      if (!me.has(post.authorName)) continue
+      if (!me.has(post.authorName.toLowerCase())) continue
       seen.set(post.id, {
         id: post.id,
         title: post.title,
