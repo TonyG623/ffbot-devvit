@@ -43,18 +43,46 @@ export async function sendModAlert(
   }
 }
 
-/** Fetch a wiki page's markdown, or undefined when it does not exist. */
+/**
+ * Fetch a wiki page's markdown, or undefined when it cannot be read.
+ *
+ * Tries `v1` and falls back to `v2`, because a page whose LAST REVISION was
+ * made by an account that no longer resolves is unreadable on v1. The SDK
+ * builds the revision author eagerly:
+ *
+ *     // WikiPage.js
+ *     revisionAuthor = wikiVersion === 'v1' && data.revisionBy?.data
+ *       ? new User(data.revisionBy.data) : undefined
+ *
+ * and `new User()` asserts on `id`, `name` and `createdUtc`. A suspended or
+ * deleted author comes back as a stub missing `createdUtc`, the assert throws,
+ * and the whole fetch fails -- even though `contentMd` arrived intact in the
+ * same response. On `v2` that branch is skipped, so the page reads fine.
+ *
+ * This bit r/fantasyfootball on 2026-11-06: `ffbot/commish` and `ffbot/friday`
+ * were last revised seven years ago by an account that no longer resolves, so
+ * both threads published with the body `No Wiki Found` while the nine pages
+ * with recent revisions were fine.
+ *
+ * Every failure is logged. The previous version swallowed the error entirely,
+ * which is why a dead-simple fault took three wrong hypotheses to corner.
+ */
 export async function getWiki(
   subredditName: string,
   page: string,
 ): Promise<string | undefined> {
-  try {
-    const wiki = await reddit.getWikiPage(subredditName, page)
-    // The Python un-escaped these so raw HTML in wiki bodies survived.
-    return wiki.content.replaceAll('&lt;', '<').replaceAll('&gt;', '>')
-  } catch {
-    return undefined
+  for (const wikiVersion of ['v1', 'v2'] as const) {
+    try {
+      const wiki = await reddit.getWikiPage(subredditName, page, {wikiVersion})
+      // The Python un-escaped these so raw HTML in wiki bodies survived.
+      return wiki.content.replaceAll('&lt;', '<').replaceAll('&gt;', '>')
+    } catch (err) {
+      console.warn(
+        `WARN: wiki page ${page} unreadable on ${wikiVersion}: ${String(err)}`,
+      )
+    }
   }
+  return undefined
 }
 
 /** Body used when a thread's wiki page is missing — matches the Python. */
