@@ -414,6 +414,44 @@ a bug in the app.
   which you want before submitting the port.
 - Devvit apps need no credentials at all. Auth is automatic.
 
+## THE APP WAS UNINSTALLED FROM r/fantasyfootball, 2026-11-06 05:52 CST
+
+**Nobody in this session did it.** The rollover watch that was armed overnight
+never reached its kill switch — its output shows the "rollover did not happen"
+branch. Tony was asleep. So this was done from outside: a moderator, the
+account owner, or Reddit.
+
+The timeline is tight enough to be worth keeping:
+
+| When | What |
+| --- | --- |
+| 2026-11-06 05:01Z | normal cycle, index edited, triggers counting |
+| **11:52:39Z (05:52:39 CST)** | `devvit logs` stream closes **cleanly**, mid-operation, no error |
+| 12:00 CST | the 06:00 rollover that would have posted Friday's set — **never happened** |
+| 13:00Z | `list installs` no longer lists fantasyfootball; `devvit logs` returns `not_found` for both `ffbot` and `ffbot-app` |
+
+The stream did not drop. It ended because the installation it was streaming
+from stopped existing — which dates the uninstall to 05:52:39 CST, seven
+minutes before the rollover.
+
+**Consequence:** r/fantasyfootball got no daily threads for Fri 11/06. The
+Thursday set is the last thing the app posted. Nothing is wrong with the code;
+there is simply nothing installed to run it.
+
+**Do not reinstall without knowing why it was removed.** If Reddit pulled it,
+reinstalling fights that decision; if a mod pulled it, they had a reason. The
+app itself still exists (`list apps` shows `ffbot-app`, 1 install, which is the
+dev subreddit), so this was an uninstall, not a ban or a takedown.
+
+### A watch bug worth fixing before relying on one again
+
+The overnight watch had a dead-stream check in its waiting phase but **not** in
+its rollover-window phase. When the stream died at 11:52Z the watch had already
+crossed into the window, so it sat polling a frozen file until its deadline and
+reported "rollover did not happen" — technically true, but it could not tell
+"the rollover failed" from "I went blind". Any future phase needs the liveness
+check in every phase, not just the first.
+
 ## STATE AS OF 2026-11-05 EVENING
 
 Live on r/fantasyfootball, **v0.0.6**, healthy. Zero errors, zero 429s across
