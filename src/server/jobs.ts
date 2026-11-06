@@ -522,7 +522,23 @@ async function reconcileOne(
 }
 
 async function renderOne(run: RunState, thread: RunThread): Promise<void> {
-  if (thread.config.no_table) return
+  // `no_table` means "no tables", NOT "never updated". These threads used to
+  // return here, so the body written at submit could never be corrected --
+  // a wiki page repaired afterwards simply never reached the post. That left
+  // Free Talk Friday reading "No Wiki Found" for a whole day on 2026-11-06
+  // even after the wiki was fixed. No counters are involved, so this also
+  // skips the seeding guard below.
+  if (thread.config.no_table) {
+    const post = await reddit.getPostById(thread.postId as `t3_${string}`)
+    // Identical text every cycle would be a pointless write and would keep
+    // bumping the post's "edited" marker, so only edit on a real change.
+    if (post.body === thread.body) return
+    console.log(
+      `EDITING THREAD ${thread.postId}: no_table, body ${thread.body.length} chars`,
+    )
+    await post.edit({text: thread.body})
+    return
+  }
 
   // Do NOT render a thread whose counters have not been seeded. Reconcile only
   // seeds one thread per cycle, so on a cold start the rest have empty state --
@@ -611,9 +627,22 @@ export async function buildIndex(): Promise<void> {
   }
 
   if (found) {
-    console.log(`EDITING INDEX ${title}`)
     const post = await reddit.getPostById(found.id as `t3_${string}`)
+    console.log(`EDITING INDEX ${title} (${found.id} ${post.permalink})`)
     await post.edit({text: body})
+    // Re-pin an Index that has come unstickied -- previously `sticky()` ran
+    // only on the submit path, so an Index unpinned by anything (a mod
+    // clearing slots, a second sticky taking the slot) stayed unpinned for
+    // the rest of the day. Guarded on the current state so the normal path
+    // costs no extra API call.
+    //
+    // NOTE: this does mean a mod who deliberately unstickies the Index will
+    // see it come back within fifteen minutes. Turn `index` off in the wiki
+    // config to stop it properly.
+    if (!found.stickied) {
+      console.log(`RE-STICKYING INDEX ${found.id}`)
+      await post.sticky(1)
+    }
     return
   }
 
