@@ -419,6 +419,22 @@ a bug in the app.
 Live on r/fantasyfootball, **v0.0.6**, healthy. Zero errors, zero 429s across
 the whole afternoon's logs.
 
+**The droplet is destroyed** (Tony, 2026-11-05 evening). The Python bot is gone
+for good, which was already true in effect — the account conversion meant it
+could no longer authenticate as u/FFBot. Two loose ends went with it:
+
+- **Its crontab was never committed anywhere.** It was the only record of which
+  subreddits the bot actually ran for. `post_daily_threads.py` takes the config
+  as `sys.argv[1]`, and FFBotPrivate holds `fantasybball.yaml` and
+  `fantasyhockey.yaml` next to `fantasyfootball.yaml`. If a cron line still fed
+  either of those, r/fantasybball or r/fantasyhockey lost its daily threads on
+  2026-11-05 and nothing covers them — this app is installed on
+  r/fantasyfootball only. Only Reddit can answer that now: check u/FFBot's
+  submission history for posts in those subs before 2026-11-05.
+- **`post_player_discussions.py` was not ported.** The only "player" reference
+  in this port is a flair filter in the news round-up (`jobs.ts:656`), which is
+  a different feature. If r/fantasyfootball wanted those threads, they stopped.
+
 **What is now verified in production**, not just on a test subreddit:
 
 - De-duplication: 11 `ALREADY SUBMITTED, USING:` per cycle, no re-posting
