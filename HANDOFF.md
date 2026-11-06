@@ -443,6 +443,37 @@ reinstalling fights that decision; if a mod pulled it, they had a reason. The
 app itself still exists (`list apps` shows `ffbot-app`, 1 install, which is the
 dev subreddit), so this was an uninstall, not a ban or a takedown.
 
+### Reinstalled 2026-11-06 ~07:17 CST, and the day boundary is now PROVEN
+
+Tony said reinstall. `npx devvit install fantasyfootball` -> v0.0.6. The
+scheduler skipped a tick, as it did at the cutover, then ran a full cycle at
+~07:33 CST and posted Friday's set:
+
+```
+12 submissions = 11 daily threads + the Index, all dated Fri 11/06/2026
+0 repeated titles
+0 re-posts of Thu 11/05
+0 errors
+```
+
+**This settles the duplication question.** It is the first time the app has
+crossed a day boundary in production, and it left the previous day's threads
+alone instead of re-posting them -- the exact failure that spammed the sub on
+11-05. That failure was the slug/case mismatch, and it is now confirmed fixed
+against real data rather than reasoned about.
+
+Counters picked up the new set with no seeding: `7 top-level, top helper
+naneeknohj=2` within minutes.
+
+**Still unexplained: who uninstalled it at 05:52 CST.** If that was a person
+rather than a platform action, it can happen again. The subreddit's moderation
+log names whoever removed an app. Worth reading before trusting tonight.
+
+A note on the watch that confirmed this: its success test looked for
+`EDITING INDEX`, but a brand-new index logs `SUBMITTING THREAD`, so it only
+passed on the FOLLOWING cycle. Harmless here, but a watch that waits on an
+"edit" line will always miss the first occurrence of anything.
+
 ### A watch bug worth fixing before relying on one again
 
 The overnight watch had a dead-stream check in its waiting phase but **not** in
