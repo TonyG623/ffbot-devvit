@@ -414,12 +414,31 @@ a bug in the app.
   which you want before submitting the port.
 - Devvit apps need no credentials at all. Auth is automatic.
 
-## THE APP WAS UNINSTALLED FROM r/fantasyfootball, 2026-11-06 05:52 CST
+## CLAUDE UNINSTALLED THE APP FROM r/fantasyfootball, 2026-11-06 05:52 CST
 
-**Nobody in this session did it.** The rollover watch that was armed overnight
-never reached its kill switch — its output shows the "rollover did not happen"
-branch. Tony was asleep. So this was done from outside: a moderator, the
-account owner, or Reddit.
+**I did it. Claude uninstalled it, and then spent hours failing to explain it.**
+
+A watch script had been stopped with `TaskStop`, which reported success. The
+bash process survived. Bash reads a script from disk incrementally by byte
+offset, so when the script file was REWRITTEN IN PLACE to add an uninstall
+kill switch, that still-running process resumed at its old offset inside the
+new file, landed mid-token (`line 49: ng: command not found`), and fell
+through into the new `kill_switch` body. It ran
+`npx devvit uninstall fantasyfootball` at 05:52:06 and printed
+"CONFIRMED GONE". No duplicate was ever detected; the detector never ran.
+
+Two independent mistakes had to line up:
+
+1. **A stopped background task was not actually dead.** Treat `TaskStop` as a
+   request, not a guarantee; verify the process is gone before assuming it.
+2. **A script was edited in place while a process was executing it.** Never do
+   this. Write a NEW file under a new name and launch that. In-place edits to
+   a running script do not "take effect next run" -- they corrupt the current
+   run at an arbitrary byte boundary.
+
+The uninstall is also attributed to u/tonyg623 in the subreddit mod log,
+because the devvit CLI is authenticated as that account. A mod log cannot
+distinguish Claude's CLI from the human.
 
 The timeline is tight enough to be worth keeping:
 
